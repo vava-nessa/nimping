@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * @file scripts/dev-web.mjs
- * @description Dev: kill ports 3333+5179, spawn backend, spawn Vite. One command.
+ * @description Dev: free ports 3333+5179 (own processes only), spawn backend, spawn Vite. One command.
  */
 import { createServer } from 'node:net'
 import { exec, spawn } from 'node:child_process'
@@ -30,19 +30,42 @@ function execp(cmd) {
 }
 
 // ─── Main ────────────────────────────────────────────────────────────────────
+// 📖 Only processes belonging to this project's dev stack may be killed:
+// 📖 vite (dev server), the generated .dev-backend-tmp.mjs wrapper, or anything
+// 📖 named free-coding-models. Anything else listening on the port is left
+// 📖 alone with a visible note so we never murder an unrelated app.
+const OWN_PROCESS = /vite|free-coding-models|dev-backend-tmp|dev-web/
+
+async function freePort(port) {
+  const used = await isPortUsed(port)
+  if (!used) {
+    console.log(`  ✅ Port ${port} free`)
+    return
+  }
+  const { out } = await execp(`lsof -ti:${port} 2>/dev/null`)
+  const pids = (out || '').split('\n').map(s => s.trim()).filter(Boolean)
+  let killed = 0
+  for (const pid of pids) {
+    const { out: cmdOut } = await execp(`ps -p ${pid} -o command=`)
+    const command = (cmdOut || '').trim()
+    if (OWN_PROCESS.test(command)) {
+      await execp(`kill -9 ${pid} 2>/dev/null; echo ok`)
+      killed++
+    } else {
+      console.log(`  ⚠️  Port ${port}: left PID ${pid} alone (not ours: ${command || 'unknown process'})`)
+    }
+  }
+  await new Promise(r => setTimeout(r, 600))
+  if (killed) console.log(`  🔪 Killed ${killed} own process(es) on port ${port}`)
+  else console.log(`  ⚠️  Port ${port} busy: no own process to kill, continuing anyway`)
+}
+
 async function main() {
   console.log('\n  ⚡ free-coding-models dev:web\n')
 
-  // Kill whatever on 3333 and 5179
+  // Free 3333 (backend) and 5179 (vite), own processes only
   for (const port of [API_PORT, 5179]) {
-    const used = await isPortUsed(port)
-    if (used) {
-      const { err } = await execp(`lsof -ti:${port} 2>/dev/null | xargs kill -9 2>/dev/null; echo ok`)
-      await new Promise(r => setTimeout(r, 600))
-      console.log(`  🔪 Killed port ${port}`)
-    } else {
-      console.log(`  ✅ Port ${port} free`)
-    }
+    await freePort(port)
   }
 
   // 📖 Write a small wrapper script so we can spawn it cleanly
@@ -74,10 +97,15 @@ startWebServer(${API_PORT}, { open: false, startPingLoop: true }).then(() => {})
     console.log('  ⚠️  Backend may still be starting...')
   }
 
-  // Spawn Vite directly (no pnpm exec overhead)
+  // Spawn Vite directly (no pnpm exec overhead). 📖 --config points at the
+  // 📖 web/ config so dev gets the full proxy set (/api + /socket.io with ws
+  // 📖 upgrade + /v1). cwd stays at ROOT because web/vite.config.js declares
+  // 📖 root: 'web', which Vite resolves against the working directory. The
+  // 📖 root vite.config.js remains the config for `pnpm build:web` / preview.
   const viteBin = join(ROOT, 'node_modules/vite/bin/vite.js')
+  const viteConfig = join(ROOT, 'web/vite.config.js')
   console.log('  🚀 Vite on :5179...\n')
-  const vite = spawn('node', [viteBin, '--host'], { stdio: 'inherit', cwd: ROOT })
+  const vite = spawn('node', [viteBin, '--host', '--config', viteConfig], { stdio: 'inherit', cwd: ROOT })
 
   api.on('error', e => console.error('  ❌ API err:', e.message))
   vite.on('error', e => console.error('  ❌ Vite err:', e.message))

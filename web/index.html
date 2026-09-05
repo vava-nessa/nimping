@@ -45,16 +45,12 @@
   <meta name="twitter:description" content="Find the fastest free coding LLM model in seconds.">
   <meta name="twitter:image" content="/favicons/favicon-512x512.png">
 
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <!-- 📖 No webfont links: the dashboard must work fully offline / air-gapped.
+       📖 Font stacks live in web/src/global.css and fall back to system fonts
+       📖 (locally installed Inter / JetBrains Mono are still picked up if present). -->
 </head>
 <body>
   <div id="root"></div>
   <script type="module" src="/src/main.jsx"></script>
-  <!-- 📖 PostHog analytics — privacy-first, self-hosted option available -->
-  <script>
-    !function(t,e){var o,n,p,r;e.__SV||(window.posthog=e,e._i=[],e.init=function(i,s,a){function g(t,e){var o=e.split(".");2==o.length&&(t=t[o[0]],e=o[1]),t[e]=function(){t.push([e].concat(Array.prototype.slice.call(arguments,0)))}}(p=t.createElement("script")).type="text/javascript",p.crossOrigin="anonymous",p.async=!0,p.src=s.api_host.replace(".i.",".js."),function(t,e,o,n){var i,s;for(n=function(t,e){return t[e]},s=e.split("."),i=0;i<s.length-1;i++)n=n(s[i],t);(a=n[s.pop()])&&a.apply(t,[].slice.call(arguments,0))}(e,"5.0.0")},e.init('phc_PLACEHOLDER_REPLACE_WITH_YOUR_KEY',{api_host:'https://us.i.posthog.com'}))}(document,window.posthog||[]);
-  </script>
 </body>
 </html>

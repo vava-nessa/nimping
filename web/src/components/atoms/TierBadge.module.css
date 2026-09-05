@@ -1,6 +1,6 @@
 .badge {
   display: inline-block;
-  font-family: 'JetBrains Mono', monospace;
+  font-family: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
   font-weight: 700;
   font-size: 11px;
   padding: 2px 8px;

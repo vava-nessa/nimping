@@ -4,7 +4,7 @@
 .high { background: linear-gradient(90deg, #00ff88, #76b900); }
 .mid  { background: linear-gradient(90deg, #ffaa00, #ff8c00); }
 .low  { background: linear-gradient(90deg, #ff4444, #cc0000); }
-.value { font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: 600; }
+.value { font-family: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace; font-size: 12px; font-weight: 600; }
 .none  { color: var(--color-text-dim); }
 
 /* 📖 Light theme: drop the neon gradients to deep, saturated versions. */

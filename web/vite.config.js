@@ -13,6 +13,14 @@ const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url),
 export default defineConfig({
   plugins: [react()],
   root: 'web',
+  // 📖 Force a single React instance across the app + every dependency graph
+  // 📖 (react-table, react-virtual, tabler…), same as the root vite.config.js
+  // 📖 used for production builds. Without this, pnpm's nested peer-dep
+  // 📖 resolution can make Vite's esbuild pre-bundler ship two copies of
+  // 📖 React → "Invalid hook call" crashes at runtime in dev too.
+  resolve: {
+    dedupe: ['react', 'react-dom'],
+  },
   build: {
     outDir: 'dist',
     emptyOutDir: true,

@@ -55,8 +55,11 @@
   --verdict-notactive:  #555570;
   --verdict-pending:    #444460;
 
-  --font-sans:  'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  --font-mono:  'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+  /* 📖 No webfonts: Inter / JetBrains Mono are only used when installed
+     📖 locally, otherwise the stack falls back to native system fonts so the
+     📖 dashboard renders identically in air-gapped / offline Docker setups. */
+  --font-sans:  'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --font-mono:  'JetBrains Mono', ui-monospace, 'SF Mono', 'Fira Code', 'Cascadia Code', Menlo, Consolas, monospace;
 
   --header-h: 60px;
   --radius-sm: 4px;
