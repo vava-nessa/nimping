@@ -94,5 +94,10 @@
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "vite": "^8.0.16"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
   }
 }

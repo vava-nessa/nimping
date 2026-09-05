@@ -34,9 +34,11 @@ jobs:
       - run: pnpm install --frozen-lockfile
 
       # 📖 web/dist is gitignored but some router-daemon static-serving tests
-      # 📖 expect it to exist; build it exactly like `prepack` does.
+      # 📖 expect it to exist. Plain `vite build` is enough for tests: the
+      # 📖 favicon step of build:web needs ImageMagick, which the runner
+      # 📖 does not ship.
       - name: Build web dashboard
-        run: pnpm build:web
+        run: npx vite build
 
       - name: Run unit tests
         run: pnpm test
