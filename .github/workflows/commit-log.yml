@@ -9,6 +9,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Send embed to Discord
+        # 📖 A broken notification must never turn pushes red: the step is
+        # 📖 still marked failed (visible annotation) but the workflow stays
+        # 📖 green. If this logs 404 or 401 the webhook was deleted or
+        # 📖 regenerated in Discord: recreate it there, then update the
+        # 📖 DISCORD_WEBHOOK_GITHUB secret (Settings > Secrets and variables
+        # 📖 > Actions).
+        continue-on-error: true
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_GITHUB }}
           REPO_NAME: ${{ github.event.repository.name }}
@@ -59,6 +66,11 @@ jobs:
             },
           }, (res) => {
             console.log('Discord response status:', res.statusCode)
+            if (res.statusCode === 404 || res.statusCode === 401) {
+              // 📖 Discord answers 404 when the webhook was deleted or
+              // 📖 regenerated: recreate it and update the GH secret.
+              console.error('Webhook rejected (' + res.statusCode + '): recreate the Discord webhook, then update the DISCORD_WEBHOOK_GITHUB secret in repo Settings > Secrets and variables > Actions.')
+            }
             res.resume()
             process.exit(res.statusCode >= 200 && res.statusCode < 300 ? 0 : 1)
           })
