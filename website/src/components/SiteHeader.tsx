@@ -17,7 +17,7 @@ import { site } from '~/lib/site'
 const NAV = [
   { to: '/models', label: 'Models' },
   { slug: 'introduction', label: 'Docs' },
-  { to: '/docs/providers', label: 'Providers' },
+  { slug: 'providers', label: 'Providers' },
   { to: '/changelogs', label: 'Changelogs' },
 ] as const
 

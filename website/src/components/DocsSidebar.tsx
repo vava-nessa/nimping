@@ -24,7 +24,8 @@ function NavGroup({ group, pathname }: { group: DocGroup; pathname: string }) {
   const visibleItems: DocLink[] = []
   for (let i = 0; i < group.items.length; i++) {
     if (i < primaryCount || i === activeIndex || expanded) {
-      visibleItems.push(group.items[i])
+      const item = group.items[i]
+      if (item) visibleItems.push(item)
     }
   }
 
@@ -101,7 +102,14 @@ export function MobileSidebar({ open, onClose }: { open: boolean; onClose: () =>
         </div>
         <DocsSidebar />
       </div>
-      <div className="flex-1" onClick={onClose} />
+      {/* 📖 Click-away backdrop: a real button so keyboard users can close
+          the drawer too (not just mouse / Escape). */}
+      <button
+        type="button"
+        onClick={onClose}
+        aria-label="Close navigation"
+        className="flex-1 cursor-default appearance-none border-0 bg-transparent p-0"
+      />
     </div>
   )
 }

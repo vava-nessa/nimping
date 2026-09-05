@@ -2,7 +2,7 @@
  * @file src/components/DocSearch.tsx
  * @description Docs search trigger button and modal dialog.
  */
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from '@tanstack/react-router'
 import { flatDocs } from '~/content/nav'
 
@@ -33,6 +33,7 @@ export function SearchDialog() {
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
   const navigate = useNavigate()
+  const inputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     const handleOpen = () => setOpen(true)
@@ -54,6 +55,15 @@ export function SearchDialog() {
     }
   }, [])
 
+  // 📖 Move focus into the dialog when it opens and restore it to the
+  // trigger element when it closes (or the component unmounts mid-open).
+  useEffect(() => {
+    if (!open) return
+    const previouslyFocused = document.activeElement as HTMLElement | null
+    inputRef.current?.focus()
+    return () => previouslyFocused?.focus()
+  }, [open])
+
   if (!open) return null
 
   const filtered = query.trim()
@@ -62,18 +72,24 @@ export function SearchDialog() {
 
   return (
     <div className="fixed inset-0 z-50 flex items-start justify-center pt-20 px-4 bg-bg/80 backdrop-blur-md">
-      <div className="w-full max-w-lg rounded-xl border border-border bg-bg-raised shadow-2xl overflow-hidden">
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Search documentation"
+        className="w-full max-w-lg rounded-xl border border-border bg-bg-raised shadow-2xl overflow-hidden"
+      >
         <div className="flex items-center border-b border-border px-4 py-3">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true" className="mr-3 text-fg-faint">
             <circle cx="11" cy="11" r="8" />
             <path d="m21 21-4.35-4.35" />
           </svg>
           <input
+            ref={inputRef}
             type="text"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Search documentation..."
-            autoFocus
+            aria-label="Search documentation"
             className="w-full bg-transparent font-mono text-sm text-fg outline-none placeholder:text-fg-faint"
           />
           <button

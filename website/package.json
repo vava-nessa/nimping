@@ -8,24 +8,21 @@
     "dev": "vite dev --port 4328",
     "build": "vite build",
     "preview": "vite preview",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "lint": "biome lint src"
   },
   "dependencies": {
     "@mdx-js/react": "^3.1.0",
-    "@react-three/drei": "^10.7.7",
-    "@react-three/fiber": "^9.6.1",
     "@tabler/icons-react": "^3.46.0",
     "@tanstack/react-router": "^1.132.0",
-    "clsx": "^2.1.1",
     "framer-motion": "^12.42.2",
     "lucide-react": "^0.545.0",
     "ogl": "^1.0.11",
     "react": "^19.1.0",
-    "react-dom": "^19.1.0",
-    "tailwind-merge": "^3.6.0",
-    "three": "^0.185.1"
+    "react-dom": "^19.1.0"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.2.4",
     "@mdx-js/rollup": "^3.1.0",
     "@shikijs/rehype": "^3.0.0",
     "@tailwindcss/vite": "^4.1.0",
@@ -34,7 +31,6 @@
     "@types/node": "^22.10.2",
     "@types/react": "^19.1.0",
     "@types/react-dom": "^19.1.0",
-    "@types/three": "^0.185.0",
     "@vitejs/plugin-react": "^5.0.0",
     "gray-matter": "^4.0.3",
     "rehype-autolink-headings": "^7.1.0",

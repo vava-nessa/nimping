@@ -12,12 +12,13 @@ import rehypeSlug from 'rehype-slug'
 import rehypeAutolinkHeadings from 'rehype-autolink-headings'
 import rehypeShiki from '@shikijs/rehype'
 
-// 📖 Resolve `sources.js` from the project root. The prebuild script
-// (`scripts/copy-sources.mjs`) copies the file from the monorepo root
-// into `website/src/_fcm-sources/sources.js` so Vercel can resolve it
-// without needing the whole monorepo in its build context. Local dev
-// also runs the prebuild via `npm run dev` (npm runs prebuild hooks
-// automatically), so the alias works in both cases.
+// 📖 Resolve the vendored `sources.js` copy. The catalog lives at the
+// monorepo root (`sources.js`); `./sync-website-sources.sh` (repo root)
+// copies it into `website/src/_fcm-sources/sources.js` and that vendored
+// copy is committed to git. This keeps the Vercel build self-contained
+// (only the `website/` subdirectory is deployed) - run the sync script
+// after changing the root catalog, then commit, so builds never ship
+// stale data.
 const fcmSourcesPath = pathResolve(
   fileURLToPath(new URL('./src/_fcm-sources/sources.js', import.meta.url)),
 )

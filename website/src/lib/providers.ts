@@ -343,6 +343,84 @@ export const PROVIDERS: Provider[] = [
     href: 'https://novita.ai',
   },
   {
+    slug: 'pollinations',
+    name: 'Pollinations AI',
+    tagline: 'Free · daily Pollen grants · S-tier models included',
+    signup: 'https://enter.pollinations.ai',
+    docs: 'https://pollinations.ai',
+    envVar: 'POLLINATIONS_API_KEY',
+    baseUrl: 'https://gen.pollinations.ai/v1',
+    freeTier:
+      'Free access funded by daily Pollen grants (Pollinations\' usage currency). API keys are issued at enter.pollinations.ai.',
+    subtleties: [
+      'The OpenAI-compatible endpoint is `https://gen.pollinations.ai/v1` (chat completions).',
+      'Heavy S-tier models (Kimi, MiniMax, GLM) burn through the daily Pollen grant faster than small ones.',
+    ],
+    href: 'https://pollinations.ai',
+  },
+  {
+    slug: 'siliconflow',
+    name: 'SiliconFlow',
+    tagline: 'Free · $0 models at 1000 RPM',
+    signup: 'https://cloud.siliconflow.cn',
+    docs: 'https://docs.siliconflow.cn',
+    envVar: 'SILICONFLOW_API_KEY',
+    baseUrl: 'https://api.siliconflow.cn/v1',
+    freeTier:
+      'A small set of open models (Qwen, GLM, DeepSeek R1 distills) is priced at $0 with up to 1000 RPM. The rest of the catalog is paid.',
+    subtleties: [
+      'Only the $0-priced models are effectively free - check the model page before routing production traffic.',
+      'The base URL is `api.siliconflow.cn` (China region endpoint).',
+    ],
+    href: 'https://siliconflow.cn',
+  },
+  {
+    slug: 'requesty',
+    name: 'Requesty',
+    tagline: 'Free · 200 req/day · no card',
+    signup: 'https://app.requesty.ai',
+    docs: 'https://docs.requesty.ai',
+    envVar: 'REQUESTY_API_KEY',
+    baseUrl: 'https://router.requesty.ai/v1',
+    freeTier:
+      '200 free requests per day, no credit card required. Routes to NVIDIA, Poolside, Google, Mistral and more through one key.',
+    subtleties: [
+      'Model slugs are namespaced by upstream, e.g. `nvidia/nemotron-3-ultra-550b-a55b`.',
+    ],
+    href: 'https://requesty.ai',
+  },
+  {
+    slug: 'orcarouter',
+    name: 'OrcaRouter',
+    tagline: 'Free · 3 $-0 models · zero markup',
+    signup: 'https://orcarouter.ai',
+    docs: 'https://orcarouter.ai',
+    envVar: 'ORCAROUTER_API_KEY',
+    baseUrl: 'https://api.orcarouter.ai/v1',
+    freeTier:
+      'Small catalog of permanently $0 models: DeepSeek V4 Flash, Tencent Hy3 and Qwen3.8 27B.',
+    subtleties: [
+      'The catalog only lists models served at a $0 price point, so it stays small.',
+    ],
+    href: 'https://orcarouter.ai',
+  },
+  {
+    slug: 'vercel-gateway',
+    name: 'Vercel AI Gateway',
+    tagline: 'Free · $5 credits / 30 days + $0 models',
+    signup: 'https://vercel.com/ai-gateway',
+    docs: 'https://vercel.com/docs/ai-gateway',
+    envVar: 'VERCEL_AI_GATEWAY_API_KEY',
+    baseUrl: 'https://ai-gateway.vercel.sh/v1',
+    freeTier:
+      '$5 of credits refreshed every 30 days plus a set of permanently $0 models. No credit card required.',
+    subtleties: [
+      'The OpenAI-compatible endpoint is `https://ai-gateway.vercel.sh/v1`.',
+      'The $0 variants carry a `-free` slug suffix, e.g. `minimax/minimax-m3-free`.',
+    ],
+    href: 'https://vercel.com/ai-gateway',
+  },
+  {
     slug: 'ollama-cloud',
     name: 'Ollama Cloud',
     tagline: 'Free plan · session + weekly caps',

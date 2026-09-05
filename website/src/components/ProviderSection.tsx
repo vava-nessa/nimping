@@ -14,7 +14,7 @@ import { PROVIDERS, type Provider } from '~/lib/providers'
 // hand-map them. Where the provider doesn't have a LobeHub asset we
 // leave the slug as `null` and the renderer falls back to the LobeHub
 // default `m` placeholder monogram (also served by jsDelivr).
-const LOBEHUB_ICONS: Record<string, string> = {
+const LOBEHUB_ICONS: Record<string, string | null> = {
   nvidia: 'nvidia',
   groq: 'groq',
   cerebras: 'cerebras',
@@ -38,7 +38,6 @@ const LOBEHUB_ICONS: Record<string, string> = {
 }
 
 const LOBEHUB = 'https://cdn.jsdelivr.net/npm/@lobehub/icons-static-svg@1/icons'
-const SIMPLE_ICONS = 'https://cdn.jsdelivr.net/npm/simple-icons@latest/icons'
 
 // 📖 Local overrides — providers that ship their own curated artwork in
 // `public/providers/<slug>/`. Wins over the LobeHub fallback so the
@@ -180,7 +179,7 @@ export function ProvidersGrid() {
             <div className="flex items-center gap-2 mb-3">
               <IconBolt size={14} className="text-fg-muted" stroke={1.75} />
               <span className="font-mono text-xs font-medium text-fg-faint uppercase tracking-wider">
-                Providers · 20 integrated
+                Providers · {PROVIDERS.length} integrated
               </span>
             </div>
             <h2 className="text-3xl font-semibold tracking-tight text-fg sm:text-4xl">

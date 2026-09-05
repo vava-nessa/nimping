@@ -41,6 +41,9 @@ export const Route = createFileRoute('/docs/$')({
             : []),
         ]
       : [],
+    links: loaderData
+      ? [{ rel: 'canonical', href: `${site.url}/docs/${loaderData.slug}` }]
+      : [],
   }),
   component: DocPage,
 })

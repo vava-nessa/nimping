@@ -36,7 +36,10 @@ function compareSemver(a: string, b: string): number {
 function cleanMarkdownText(text: string): string {
   return text
     .replace(/^[-*+]\s+/, '') // strip bullet markers
-    .replace(/^[📊🛰️🔍🤖🦾🌐🕒🕵️📦🧠🧪🛡️🐛📦✨🚀🔧⚡🎉]\s*/u, '') // strip leading emojis
+    // 📖 Strip leading emoji. \p{Extended_Pictographic} alternated with the
+    // variation selector / ZWJ joiners so composed emoji (e.g. satellite) are
+    // fully removed.
+    .replace(/^(?:\p{Extended_Pictographic}|[\uFE0F\u200D])+\s*/u, '')
     .replace(/\*\*([^*]+)\*\*/g, '$1') // strip bold
     .replace(/`([^`]+)`/g, '$1') // strip inline code formatting
     .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1') // strip markdown links
@@ -70,7 +73,7 @@ export function getAllChangelogs(): ChangelogEntry[] {
     const headerLine = lines[0] || ''
     const headerMatch = headerLine.match(/# (?:Changelog v[\d.]+|[\d.]+)\s*[-—]\s*(\d{4}-\d{2}-\d{2})/)
     if (headerMatch) {
-      date = headerMatch[1]
+      date = headerMatch[1] ?? null
     }
 
     // Find first descriptive bullet point or header for release name

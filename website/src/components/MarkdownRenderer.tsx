@@ -17,6 +17,11 @@ function formatInlineMarkdown(text: string): string {
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
+    // 📖 Escape quotes too: the escaped text ends up inside href="..."
+    // attributes, so an unescaped double quote would let a markdown link
+    // break out of the attribute (HTML injection).
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
     .replace(/\*\*([^*]+)\*\*/g, '<strong class="text-fg font-semibold">$1</strong>')
     .replace(
       /`([^`]+)`/g,
@@ -42,11 +47,21 @@ function isTableSeparator(line: string): boolean {
 
 function CodeBlock({ code, language }: { code: string; language: string }) {
   const [copied, setCopied] = React.useState(false)
+  const copyTimer = React.useRef<number | undefined>(undefined)
+
+  // 📖 Clear the pending "Copied!" reset when unmounting so we never
+  // set state on a removed component.
+  React.useEffect(() => {
+    return () => {
+      if (copyTimer.current !== undefined) window.clearTimeout(copyTimer.current)
+    }
+  }, [])
 
   const handleCopy = () => {
     navigator.clipboard.writeText(code)
     setCopied(true)
-    setTimeout(() => setCopied(false), 2000)
+    if (copyTimer.current !== undefined) window.clearTimeout(copyTimer.current)
+    copyTimer.current = window.setTimeout(() => setCopied(false), 2000)
   }
 
   return (
@@ -59,6 +74,7 @@ function CodeBlock({ code, language }: { code: string; language: string }) {
         <button
           type="button"
           onClick={handleCopy}
+          aria-live="polite"
           className="flex items-center gap-1 text-fg-muted hover:text-fg transition-colors px-2 py-0.5 rounded hover:bg-bg-raised cursor-pointer"
         >
           {copied ? (
@@ -96,14 +112,20 @@ export function MarkdownRenderer({ content, className = '' }: MarkdownRendererPr
     let i = 0
     while (i < lines.length) {
       const line = lines[i]
+      if (line === undefined) {
+        i++
+        continue
+      }
 
       // Code blocks (```lang ... ```)
       if (line.trim().startsWith('```')) {
         const lang = line.trim().slice(3).trim()
         const codeLines: string[] = []
         i++
-        while (i < lines.length && !lines[i].trim().startsWith('```')) {
-          codeLines.push(lines[i])
+        while (i < lines.length) {
+          const cur = lines[i]
+          if (cur === undefined || cur.trim().startsWith('```')) break
+          codeLines.push(cur)
           i++
         }
         result.push({
@@ -124,12 +146,14 @@ export function MarkdownRenderer({ content, className = '' }: MarkdownRendererPr
       // Markdown Tables (| Col 1 | Col 2 | ...)
       if (trimmed.startsWith('|') && trimmed.includes('|')) {
         const tableLines: string[] = []
-        while (i < lines.length && lines[i].trim().startsWith('|')) {
-          tableLines.push(lines[i].trim())
+        while (i < lines.length) {
+          const cur = lines[i]
+          if (cur === undefined || !cur.trim().startsWith('|')) break
+          tableLines.push(cur.trim())
           i++
         }
 
-        if (tableLines.length >= 2) {
+        if (tableLines.length >= 2 && tableLines[0] !== undefined) {
           const headers = parseTableRow(tableLines[0])
 
           let startIndex = 1
@@ -139,7 +163,9 @@ export function MarkdownRenderer({ content, className = '' }: MarkdownRendererPr
 
           const rows: string[][] = []
           for (let r = startIndex; r < tableLines.length; r++) {
-            rows.push(parseTableRow(tableLines[r]))
+            const row = tableLines[r]
+            if (row === undefined) continue
+            rows.push(parseTableRow(row))
           }
 
           result.push({
@@ -203,8 +229,10 @@ export function MarkdownRenderer({ content, className = '' }: MarkdownRendererPr
       // Blockquotes
       if (trimmed.startsWith('> ')) {
         const quoteLines: string[] = []
-        while (i < lines.length && lines[i].trim().startsWith('> ')) {
-          quoteLines.push(lines[i].trim().slice(2))
+        while (i < lines.length) {
+          const cur = lines[i]
+          if (cur === undefined || !cur.trim().startsWith('> ')) break
+          quoteLines.push(cur.trim().slice(2))
           i++
         }
         result.push({
@@ -218,7 +246,9 @@ export function MarkdownRenderer({ content, className = '' }: MarkdownRendererPr
       if (trimmed.startsWith('- ') || trimmed.startsWith('* ')) {
         const listItems: string[] = []
         while (i < lines.length) {
-          const l = lines[i].trim()
+          const cur = lines[i]
+          if (cur === undefined) break
+          const l = cur.trim()
           if (l.startsWith('- ') || l.startsWith('* ')) {
             listItems.push(l.slice(2).trim())
             i++

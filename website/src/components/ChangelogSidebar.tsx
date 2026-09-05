@@ -118,6 +118,7 @@ export function MobileChangelogSidebar({
 }) {
   const pathname = useRouterState({ select: (s) => s.location.pathname })
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: re-run only on route change; onClose is stable and idempotent.
   useEffect(() => {
     onClose()
   }, [pathname])

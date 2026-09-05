@@ -8,7 +8,9 @@ export const Route = createFileRoute('/404')({
   component: NotFoundPage,
 })
 
-function NotFoundPage() {
+/** 📖 Exported so `main.tsx` can use it as the router's
+ *  `defaultNotFoundComponent` for unknown URLs (and bad doc slugs). */
+export function NotFoundPage() {
   return (
     <div className="mx-auto flex min-h-[60vh] max-w-md flex-col items-center justify-center px-5 text-center">
       <span className="font-mono text-6xl font-bold text-accent-fg">404</span>

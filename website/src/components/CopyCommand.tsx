@@ -2,7 +2,7 @@
  * @file src/components/CopyCommand.tsx
  * @description Copy command pill component with visual feedback.
  */
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 export function CopyCommand({
   command,
@@ -12,12 +12,22 @@ export function CopyCommand({
   className?: string
 }) {
   const [copied, setCopied] = useState(false)
+  const copyTimer = useRef<number | undefined>(undefined)
+
+  // 📖 Clear the pending "Copied!" reset when unmounting so we never
+  // set state on a removed component.
+  useEffect(() => {
+    return () => {
+      if (copyTimer.current !== undefined) window.clearTimeout(copyTimer.current)
+    }
+  }, [])
 
   const handleCopy = async () => {
     try {
       await navigator.clipboard.writeText(command)
       setCopied(true)
-      setTimeout(() => setCopied(false), 2000)
+      if (copyTimer.current !== undefined) window.clearTimeout(copyTimer.current)
+      copyTimer.current = window.setTimeout(() => setCopied(false), 2000)
     } catch {
       // Fallback
     }
@@ -27,6 +37,7 @@ export function CopyCommand({
     <button
       type="button"
       onClick={handleCopy}
+      aria-live="polite"
       className={`group relative flex items-center justify-between gap-3 rounded-lg border border-border bg-bg-raised/90 px-4 py-3 font-mono text-xs text-fg transition-all hover:border-accent/50 ${className}`}
       title="Click to copy command"
     >

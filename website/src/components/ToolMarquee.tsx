@@ -60,7 +60,7 @@ function Logo({ item }: { item: Item }) {
       item.icon.kind === 'lobe'
         ? `${'https://cdn.jsdelivr.net/npm/@lobehub/icons-static-svg@1/icons'}/${item.icon.slug}${item.icon.color ? '-color' : ''}.svg`
         : item.icon.kind === 'simple'
-          ? `${'https://cdn.jsdelivr.net/npm/simple-icons@latest/icons'}/${item.icon.slug}.svg`
+          ? `${'https://cdn.jsdelivr.net/npm/simple-icons@16/icons'}/${item.icon.slug}.svg`
           : item.icon.kind === 'iconify'
             ? `${'https://api.iconify.design'}/${item.icon.prefix}/${item.icon.slug}.svg`
             : item.icon.url

@@ -25,9 +25,13 @@ import { ProvidersGrid } from '~/components/ProviderSection'
 import { Testimonials } from '~/components/Testimonials'
 import Scanner from '~/components/Scanner'
 import { INSTALL_COMMAND, site } from '~/lib/site'
+import { getProviderCount, getTierCount, getTotalCount } from '~/lib/catalog'
 import { HomeStructuredData } from '~/components/StructuredData'
 
 export const Route = createFileRoute('/')({
+  head: () => ({
+    links: [{ rel: 'canonical', href: `${site.url}/` }],
+  }),
   component: Home,
 })
 
@@ -142,9 +146,9 @@ function Hero() {
 
           <div className="animate-rise mt-16 grid w-full max-w-3xl grid-cols-2 gap-px overflow-hidden rounded-lg border border-border bg-border sm:grid-cols-4">
             {[
-              { number: 'Many', label: 'Models' },
-              { number: '20+', label: 'Providers' },
-              { number: '68', label: 'S+ tier' },
+              { number: String(getTotalCount()), label: 'Models' },
+              { number: String(getProviderCount()), label: 'Providers' },
+              { number: String(getTierCount('S+')), label: 'S+ tier' },
               { number: '<100ms', label: 'Failover' },
             ].map(({ number, label }) => (
               <div key={label} className="bg-bg p-5 text-center">
@@ -332,7 +336,7 @@ function CatalogPreviewSection() {
               </table>
             </div>
             <div className="border-t border-border px-3 py-1.5 font-mono text-[10px] text-fg-faint">
-              + 217 more models · live at /models
+              + {getTotalCount() - 5} more models · live at /models
             </div>
           </div>
         </div>

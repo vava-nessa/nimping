@@ -8,10 +8,14 @@ export function NpmDownloads({ href }: { href: string }) {
   const [downloads, setDownloads] = useState<string | null>(null)
 
   useEffect(() => {
+    type NpmDownloadsResponse = { downloads?: unknown }
     fetch('https://api.npmjs.org/downloads/point/last-month/free-coding-models')
-      .then((res) => res.json())
+      .then((res) => {
+        if (!res.ok) throw new Error(`npm API ${res.status}`)
+        return res.json() as Promise<NpmDownloadsResponse>
+      })
       .then((data) => {
-        if (data.downloads !== undefined) {
+        if (typeof data.downloads === 'number') {
           const num = data.downloads
           setDownloads(num > 1000 ? `${(num / 1000).toFixed(1)}k` : `${num}`)
         }

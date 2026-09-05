@@ -8,10 +8,14 @@ export function GitHubStars({ href }: { href: string }) {
   const [stars, setStars] = useState<number | null>(null)
 
   useEffect(() => {
+    type GitHubRepoResponse = { stargazers_count?: unknown }
     fetch('https://api.github.com/repos/vava-nessa/free-coding-models')
-      .then((res) => res.json())
+      .then((res) => {
+        if (!res.ok) throw new Error(`GitHub API ${res.status}`)
+        return res.json() as Promise<GitHubRepoResponse>
+      })
       .then((data) => {
-        if (data.stargazers_count !== undefined) {
+        if (typeof data.stargazers_count === 'number') {
           setStars(data.stargazers_count)
         }
       })

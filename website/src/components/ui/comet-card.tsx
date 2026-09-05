@@ -33,6 +33,7 @@ export function CometCard({
   }
 
   return (
+    // biome-ignore lint/a11y/noStaticElementInteractions: decorative pointer-tilt effect; no action, no keyboard interaction applies.
     <div
       ref={cardRef}
       onMouseMove={handleMouseMove}

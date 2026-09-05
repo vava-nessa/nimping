@@ -5,7 +5,7 @@
  */
 
 const LOBEHUB = 'https://cdn.jsdelivr.net/npm/@lobehub/icons-static-svg@1/icons'
-const SIMPLE_ICONS = 'https://cdn.jsdelivr.net/npm/simple-icons@latest/icons'
+const SIMPLE_ICONS = 'https://cdn.jsdelivr.net/npm/simple-icons@16/icons'
 const ICONIFY = 'https://api.iconify.design'
 
 export type IconRef =
