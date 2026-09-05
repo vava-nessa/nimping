@@ -117,6 +117,13 @@ export async function startKilo(model, fcmConfig) {
         options: { baseURL: 'https://api.orcarouter.ai/v1', apiKey: '{env:ORCAROUTER_API_KEY}' },
         models: {}
       }
+    } else if (providerKey === 'vercel-gateway') {
+      config.provider['vercel-gateway'] = {
+        npm: '@ai-sdk/openai-compatible',
+        name: 'Vercel AI Gateway',
+        options: { baseURL: 'https://ai-gateway.vercel.sh/v1', apiKey: '{env:VERCEL_AI_GATEWAY_API_KEY}' },
+        models: {}
+      }
     } else if (providerKey === 'huggingface') {
       config.provider.huggingface = {
         npm: '@ai-sdk/openai-compatible',

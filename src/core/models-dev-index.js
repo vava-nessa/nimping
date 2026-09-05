@@ -45,6 +45,7 @@ export const PROVIDER_ALIASES = {
   nvidia:     'nvidia',
   openrouter: 'openrouter',
   orcarouter: 'orcarouter',
+  'vercel-gateway': 'vercel',
   groq:       'groq',
   cerebras:   'cerebras',
   github:     'github-models',

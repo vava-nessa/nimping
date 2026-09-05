@@ -868,6 +868,18 @@ describe('sources.js data integrity', () => {
     assert.ok(Array.isArray(sources.nvidia.models))
     assert.equal(sources.nvidia.models, nvidiaNim)
   })
+
+  it('sources object has vercel-gateway with correct structure', () => {
+    assert.ok(sources['vercel-gateway'], 'sources vercel-gateway should exist')
+    assert.equal(sources['vercel-gateway'].name, 'Vercel AI Gateway')
+    assert.equal(sources['vercel-gateway'].url, 'https://ai-gateway.vercel.sh/v1/chat/completions')
+    assert.equal(sources['vercel-gateway'].quotaCode, 'limited')
+    assert.ok(Array.isArray(sources['vercel-gateway'].models))
+    assert.ok(sources['vercel-gateway'].models.length >= 3, 'vercel-gateway should list its $0 models')
+    for (const m of sources['vercel-gateway'].models) {
+      assert.ok(m[0].endsWith('-free'), `vercel-gateway model ${m[0]} should be an explicit $0 model`)
+    }
+  })
 })
 
 // ═══════════════════════════════════════════════════════════════════════════════

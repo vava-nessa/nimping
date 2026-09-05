@@ -187,6 +187,7 @@ const ENV_VARS = {
   siliconflow: 'SILICONFLOW_API_KEY',
   requesty:   'REQUESTY_API_KEY',
   orcarouter: 'ORCAROUTER_API_KEY',
+  'vercel-gateway': ['VERCEL_AI_GATEWAY_API_KEY', 'AI_GATEWAY_API_KEY'],
 }
 
 // 📖 Smart Router defaults are intentionally conservative: balanced probing,

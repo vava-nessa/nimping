@@ -66,6 +66,7 @@ export const ENV_VAR_NAMES = {
   siliconflow: 'SILICONFLOW_API_KEY',
   requesty:   'REQUESTY_API_KEY',
   orcarouter: 'ORCAROUTER_API_KEY',
+  'vercel-gateway': 'VERCEL_AI_GATEWAY_API_KEY',
 }
 
 // 📖 OPENCODE_MODEL_MAP: sparse table of model IDs that differ between sources.js and OpenCode's
@@ -338,6 +339,14 @@ export const PROVIDER_METADATA = {
     signupHint: 'Register (GitHub OAuth, no credit card) → API keys',
     rateLimits: 'Free Hacker tier · zero token markup · 3 API keys',
     detailedLimits: 'Zero-markup AI gateway: token prices are passed through at provider rates.\nFree Hacker plan: 3 API keys, adaptive routing + automatic failover + guardrails included.\nOnly the explicit $-0 models are listed in this catalog; the orcarouter/fusion family is pay-as-you-go.',
+  },
+  'vercel-gateway': {
+    label: 'Vercel AI Gateway',
+    color: chalk.rgb(140, 170, 255),
+    signupUrl: 'https://vercel.com/ai-gateway',
+    signupHint: 'AI Gateway → API Keys ($5 credits/30 days, no card)',
+    rateLimits: 'Free tier · $5 credits/30 days + $0 models',
+    detailedLimits: 'Official Vercel gateway at list prices, zero markup.\nEvery account gets $5 of credits every 30 days, no card required.\nThe monthly credit covers a subset of the catalog; the explicit $0 models stay free.\nCaution: purchasing credits once permanently moves the account to the paid tier and the monthly free credit stops.',
   },
   'ollama-cloud': {
     label: 'Ollama Cloud',

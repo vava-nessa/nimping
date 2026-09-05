@@ -65,6 +65,8 @@ export const PROVIDER_CAPABILITIES = {
   siliconflow: { telemetryType: 'unknown', supportsEndpoint: false, usageDisplay: 'ok', resetCadence: 'daily' },
   requesty: { telemetryType: 'unknown', supportsEndpoint: false, usageDisplay: 'ok', resetCadence: 'daily' },
   orcarouter: { telemetryType: 'unknown', supportsEndpoint: false, usageDisplay: 'ok', resetCadence: 'unknown' },
+  // 📖 Vercel AI Gateway exposes GET /v1/credits but no fetcher is wired yet; treat as monthly reset.
+  'vercel-gateway': { telemetryType: 'unknown', supportsEndpoint: false, usageDisplay: 'ok', resetCadence: 'monthly' },
 }
 
 /** Fallback for unrecognized providers */

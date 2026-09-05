@@ -195,6 +195,7 @@ const PROVIDER_PALETTES = {
     pollinations: [255, 105, 180],
     requesty: [100, 149, 255],
     orcarouter: [255, 138, 64],
+    'vercel-gateway': [170, 190, 230],
     'ollama-cloud': [230, 230, 230],
   },
   light: {
@@ -228,6 +229,7 @@ const PROVIDER_PALETTES = {
     pollinations: [170, 45, 110],
     requesty: [0, 72, 170],
     orcarouter: [170, 74, 0],
+    'vercel-gateway': [60, 80, 130],
     'ollama-cloud': [88, 88, 88],
   },
 }
