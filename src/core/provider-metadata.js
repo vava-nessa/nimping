@@ -67,6 +67,16 @@ export const ENV_VAR_NAMES = {
   requesty:   'REQUESTY_API_KEY',
   orcarouter: 'ORCAROUTER_API_KEY',
   'vercel-gateway': 'VERCEL_AI_GATEWAY_API_KEY',
+  // 📖 Providers whose OpenCode/Kilo config writers reference {env:VAR} - names
+  // 📖 must match those tables exactly (see opencode.js / kilo.js).
+  huggingface: 'HUGGINGFACE_API_KEY',
+  deepinfra:  'DEEPINFRA_API_KEY',
+  fireworks:  'FIREWORKS_API_KEY',
+  together:   'TOGETHER_API_KEY',
+  hyperbolic: 'HYPERBOLIC_API_KEY',
+  perplexity: 'PERPLEXITY_API_KEY',
+  chutes:     'CHUTES_API_KEY',
+  iflow:      'IFLOW_API_KEY',
 }
 
 // 📖 OPENCODE_MODEL_MAP: sparse table of model IDs that differ between sources.js and OpenCode's

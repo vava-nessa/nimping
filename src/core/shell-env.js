@@ -35,7 +35,7 @@
  * @see src/provider-metadata.js — ENV_VAR_NAMES maps provider → env var name
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync } from 'node:fs'
+import { chmodSync, readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import * as readline from 'node:readline'
@@ -191,6 +191,8 @@ export function syncShellEnv(config) {
   try {
     const content = buildEnvContent(config, shell)
     writeFileSync(envPath, content, { mode: 0o600 })
+    // 📖 chmod also tightens pre-existing files created before the mode option was added.
+    chmodSync(envPath, 0o600)
     return { success: true, envPath }
   } catch (err) {
     return { success: false, envPath, error: err.message }

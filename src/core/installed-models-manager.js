@@ -45,7 +45,7 @@
  * @see src/endpoint-installer.js — for reinstall logic
  */
 
-import { readFileSync, existsSync, writeFileSync, mkdirSync } from 'node:fs'
+import { readFileSync, existsSync, writeFileSync, mkdirSync, chmodSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { sources } from '../../sources.js'
@@ -203,17 +203,6 @@ function parseCrushConfig(paths = getToolConfigPaths()) {
       if (config.models?.small?.model) {
         models.push({
           modelId: config.models.small.model,
-          label: `${config.models.small.model} (small)`,
-          tier: '-',
-          sweScore: '-',
-          providerKey: 'external',
-          isExternal: true,
-          canLaunch: true,
-        })
-      }
-      if (config.models?.small?.model) {
-        models.push({
-          modelId: config.models.small.model + '-small',
           label: `${config.models.small.model} (small)`,
           tier: '-',
           sweScore: '-',
@@ -677,13 +666,46 @@ function loadBackups() {
 
 /**
  * 📖 Save backups to ~/.free-coding-models-backups.json
+ * 📖 Written 0600 (snapshots may contain tool config content) with a chmod after
+ * 📖 write so pre-existing wide-permission files get tightened too.
  */
 function saveBackups(backups) {
   const dir = dirname(BACKUP_PATH)
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true })
   }
-  writeFileSync(BACKUP_PATH, JSON.stringify(backups, null, 2))
+  writeFileSync(BACKUP_PATH, JSON.stringify(backups, null, 2), { mode: 0o600 })
+  chmodSync(BACKUP_PATH, 0o600)
+}
+
+// 📖 Backups keep a copy of the original tool config so deletions can be
+// 📖 inspected later. Key-like fields are stripped recursively (and by line for
+// 📖 non-JSON configs) so plaintext API keys never land in the backups file.
+const BACKUP_SENSITIVE_KEYS = new Set(['api_key', 'apiKey', 'keys', 'token'])
+
+function stripSensitiveFields(value) {
+  if (Array.isArray(value)) return value.map(stripSensitiveFields)
+  if (value && typeof value === 'object') {
+    const out = {}
+    for (const [key, val] of Object.entries(value)) {
+      if (BACKUP_SENSITIVE_KEYS.has(key)) continue
+      out[key] = stripSensitiveFields(val)
+    }
+    return out
+  }
+  return value
+}
+
+function sanitizeBackupConfig(content) {
+  try {
+    return JSON.stringify(stripSensitiveFields(JSON.parse(content)), null, 2)
+  } catch {
+    // 📖 Non-JSON config (goose/aider YAML etc.): drop whole key-bearing lines.
+    return content
+      .split('\n')
+      .filter((line) => !/^(#|\s)*(export\s+)?[\w-]*(api[_-]?key|token|keys)[\w-]*\s*[:=]/i.test(line))
+      .join('\n')
+  }
 }
 
 /**
@@ -830,11 +852,15 @@ export function softDeleteModel(toolMode, modelId, paths = getToolConfigPaths())
       id: `${toolMode}-${modelId}-${new Date().toISOString()}`,
       toolMode,
       modelId,
-      originalConfig: originalContent,
+      originalConfig: sanitizeBackupConfig(originalContent),
       configPath,
       disabledAt: new Date().toISOString(),
       reason: 'user_deleted',
     })
+    // 📖 Keep the backup list bounded: only the 20 most recent deletions survive.
+    if (backups.disabledModels.length > 20) {
+      backups.disabledModels = backups.disabledModels.slice(-20)
+    }
     saveBackups(backups)
 
     return { success: true }

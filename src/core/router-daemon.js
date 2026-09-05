@@ -32,8 +32,8 @@
 import { createServer } from 'node:http'
 import { existsSync, readFileSync } from 'node:fs'
 import { dirname, join, resolve as resolvePath, sep as pathSep } from 'node:path'
-import { fork } from 'node:child_process'
-import { randomUUID } from 'node:crypto'
+import { fork, execFileSync } from 'node:child_process'
+import { randomUUID, timingSafeEqual } from 'node:crypto'
 import { appendFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { fileURLToPath } from 'node:url'
@@ -147,6 +147,7 @@ function normalizeToolCallsResponse(data) {
 
 const MAX_REQUEST_LOG = 200
 const MAX_SSE_CLIENTS = 10
+const MAX_SSE_CLIENTS_PER_ORIGIN = 5
 const MAX_CONCURRENT_REQUESTS = 50
 const MAX_PROBE_WINDOW = 20
 const TOKEN_FLUSH_INTERVAL_MS = 60000
@@ -212,6 +213,10 @@ function headerEntries(headers) {
   headers.forEach((value, key) => {
     const lower = key.toLowerCase()
     if (['connection', 'content-encoding', 'content-length', 'transfer-encoding'].includes(lower)) return
+    // 📖 Never relay upstream Set-Cookie / CORS headers to browser clients:
+    // 📖 the router owns its own CORS posture and must not leak upstream
+    // 📖 cookie state into the dashboard.
+    if (lower === 'set-cookie' || lower.startsWith('access-control-')) return
     entries[lower] = value
   })
   return entries
@@ -269,10 +274,11 @@ function isLoopbackHostname(hostname) {
   return h === 'localhost' || h === '127.0.0.1' || h === '[::1]' || h === '::1' || h.endsWith('.localhost')
 }
 
-// 📖 Private-network hostname check. Allows RFC 1918 IPs (10.x, 172.16-31.x,
-// 📖 192.168.x) and hostnames that end in `.local` or `.internal`. This
-// 📖 enables Docker and LAN setups where the browser hits the FCM web UI
-// 📖 from a different machine but still on a trusted network.
+// 📖 Private-network hostname check for Host-header validation. Matches
+// 📖 RFC 1918 IPs (10.x, 172.16-31.x, 192.168.x) and hostnames that end in
+// 📖 `.local` or `.internal`. Used when the daemon is explicitly bound to a
+// 📖 wildcard address (FCM_HOST=0.0.0.0) so LAN clients keep working; it
+// 📖 never grants origin trust on its own.
 function isPrivateNetworkHostname(hostname) {
   if (!hostname) return false
   const h = hostname.toLowerCase()
@@ -301,26 +307,83 @@ function getAllowedOrigins() {
 function isSameOriginOrLocal(req) {
   const origin = req.headers.origin
   const referer = req.headers.referer || req.headers.referrer
+  const hasOrigin = typeof origin === 'string' && origin.length > 0
   const candidates = []
-  if (typeof origin === 'string' && origin && origin !== 'null') candidates.push(origin)
-  else if (typeof referer === 'string' && referer) candidates.push(referer)
+  if (hasOrigin && origin !== 'null') {
+    candidates.push(origin)
+  } else if (hasOrigin && origin === 'null') {
+    // 📖 Origin: null (sandboxed iframe / opaque origin) is attacker-friendly:
+    // 📖 never trust it on its own - only a loopback Referer alongside it counts.
+    if (typeof referer !== 'string' || !referer) return false
+    candidates.push(referer)
+  } else if (typeof referer === 'string' && referer) {
+    candidates.push(referer)
+  }
 
   // 📖 No Origin/Referer → non-browser caller (curl, native app). Allow.
   if (candidates.length === 0) return true
 
+  let hostHeader = typeof req.headers.host === 'string' ? req.headers.host.toLowerCase() : ''
   for (const c of candidates) {
     try {
       const parsed = new URL(c)
       if (isLoopbackHostname(parsed.hostname)) return true
-      // 📖 Allow Docker / LAN access from private networks
-      if (isPrivateNetworkHostname(parsed.hostname)) return true
-      // 📖 Allow user-specified origins via env var
+      // 📖 Genuine same-origin request: the browser's Origin matches the Host
+      // 📖 it is already talking to (LAN/Docker setups hitting FCM_HOST).
+      if (hostHeader && parsed.host.toLowerCase() === hostHeader) return true
+      // 📖 Allow user-specified origins via env var (e.g. "http://mybox:19280")
       if (getAllowedOrigins().includes(c)) return true
     } catch {
       return false
     }
   }
   return false
+}
+
+// 📖 Host-header allowlist applied to every request before routing. Blocks
+// 📖 DNS-rebinding, where a public attacker domain resolves to 127.0.0.1 and
+// 📖 the browser sends Host: evil.com, bypassing the Origin/Referer guard.
+// 📖 Loopback Host values are always accepted; when the daemon is bound to a
+// 📖 non-loopback FCM_HOST (LAN / Docker), that hostname plus private-network
+// 📖 hosts are accepted too. Public domains stay rejected.
+function isAllowedHostHeader(hostHeader, port, boundHost) {
+  if (typeof hostHeader !== 'string' || !hostHeader) return false
+  const value = hostHeader.toLowerCase()
+  const loopback = [`127.0.0.1:${port}`, `localhost:${port}`, `[::1]:${port}`, '127.0.0.1', 'localhost', '[::1]']
+  if (loopback.includes(value)) return true
+  if (!boundHost || isLoopbackHostname(boundHost)) return false
+  const host = boundHost.toLowerCase()
+  if (value === host || value === `${host}:${port}`) return true
+  // 📖 Wildcard binds (0.0.0.0 / ::) listen on every interface, so
+  // 📖 private-network Host values are legitimate; public domains are not.
+  if (host === '0.0.0.0' || host === '::') {
+    return isPrivateNetworkHostname(value.replace(/:\d+$/, ''))
+  }
+  return false
+}
+
+// 📖 Optional shared-token auth for the OpenAI-compatible /v1 proxy.
+// 📖 Set FCM_ROUTER_TOKEN to require `Authorization: Bearer <token>` (or
+// 📖 `x-api-key: <token>`) on every /v1/* request; leave it unset for the
+// 📖 default no-auth local behavior.
+function getRouterToken() {
+  return (process.env.FCM_ROUTER_TOKEN || '').trim()
+}
+
+function safeTokenCompare(candidate, token) {
+  const bufA = Buffer.from(String(candidate || ''))
+  const bufB = Buffer.from(token)
+  if (bufA.length !== bufB.length) return false
+  return timingSafeEqual(bufA, bufB)
+}
+
+function isAuthorizedForV1(req) {
+  const token = getRouterToken()
+  if (!token) return true
+  const auth = req.headers.authorization || ''
+  if (typeof auth === 'string' && auth.startsWith('Bearer ') && safeTokenCompare(auth.slice(7).trim(), token)) return true
+  const apiKeyHeader = req.headers['x-api-key']
+  return typeof apiKeyHeader === 'string' && safeTokenCompare(apiKeyHeader.trim(), token)
 }
 
 const MIME_TYPES = {
@@ -569,7 +632,9 @@ export function cloneHeadersForUpstream(reqHeaders, apiKey, providerKey) {
   const headers = {}
   for (const [key, value] of Object.entries(reqHeaders || {})) {
     const lower = key.toLowerCase()
-    if (['host', 'connection', 'content-length', 'authorization'].includes(lower)) continue
+    // 📖 Drop the client's cookies: they belong to the local browser session
+    // 📖 and must never be forwarded to the upstream provider.
+    if (['host', 'connection', 'content-length', 'authorization', 'cookie'].includes(lower)) continue
     if (typeof value !== 'string') continue
     if (lower === 'content-type') {
       headers['Content-Type'] = value
@@ -664,6 +729,14 @@ function readRequestBody(req, limit = MAX_BODY_BYTES) {
 
 function readJsonBody(req) {
   return readRequestBody(req).then((raw) => {
+    // 📖 Refuse explicit non-JSON bodies (e.g. text/plain form posts) so a
+    // 📖 cross-site form cannot smuggle data into JSON endpoints. Missing or
+    // 📖 empty content-type stays allowed for CLI clients that send bare
+    // 📖 bodies, and anything with an empty body is fine regardless.
+    const contentType = typeof req.headers['content-type'] === 'string' ? req.headers['content-type'].toLowerCase() : ''
+    if (raw.trim() && contentType && !contentType.includes('json')) {
+      throw Object.assign(new Error(`Unsupported Content-Type: ${contentType}`), { code: 'UNSUPPORTED_MEDIA_TYPE' })
+    }
     if (!raw.trim()) return {}
     const parsed = safeJsonParse(raw)
     if (parsed === null) {
@@ -2334,7 +2407,9 @@ class RouterRuntime {
       // 📖 Provide failover fallback for non-retryable errors from the provider (like 400 Bad Request)
       // when they are caused by format idiosyncrasies (e.g. empty tools array that another model might accept)
       if (response.status >= 400 && response.status < 500) {
-        this.recordRouterError(`http_${response.status}`, requestId, { model: key, status: response.status, body: text })
+        // 📖 Telemetry keeps structural fields only: upstream response bodies
+        // 📖 must never leave the machine (they can embed user code/prompts).
+        this.recordRouterError(`http_${response.status}`, requestId, { provider: candidate.provider, model: key, status: response.status })
         this.markFailure(key, `HTTP ${response.status}`)
         this.addRequestLog({ request_id: requestId, model: key, status: response.status, latency_ms: latencyMs, tokens: 0, failover: attemptIndex > 0, error: `http_${response.status}` })
         this.recordRuntimeCall({
@@ -2440,8 +2515,9 @@ class RouterRuntime {
         // 📖 Provide failover fallback for non-retryable errors from the provider (like 400 Bad Request)
         // when they are caused by format idiosyncrasies (e.g. empty tools array that another model might accept)
         if (response.status >= 400 && response.status < 500) {
-          const rawErr = await response.text()
-          this.recordRouterError(`http_${response.status}`, requestId, { model: key, status: response.status, body: rawErr, stream: true })
+          // 📖 Telemetry keeps structural fields only: upstream response bodies
+          // 📖 must never leave the machine (they can embed user code/prompts).
+          this.recordRouterError(`http_${response.status}`, requestId, { provider: candidate.provider, model: key, status: response.status, stream: true })
           this.markFailure(key, `HTTP ${response.status}`)
           this.addRequestLog({ request_id: requestId, model: key, status: response.status, latency_ms: latencyMs, tokens: 0, failover: attemptIndex > 0, error: `http_${response.status}`, stream: true })
           return { done: false, failoverToNext: true, reason: `http_${response.status}` }
@@ -2586,8 +2662,13 @@ class RouterRuntime {
   readStreamChunkWithTimeout(reader) {
     const timeoutMs = this.routerConfig().failover.streamStallTimeoutMs
     let timeout = null
+    const read = reader.read()
+    // 📖 When the stall timer below wins the race, this read promise is
+    // 📖 abandoned; without a catch its eventual rejection would surface as
+    // 📖 an unhandledRejection and feed the daemon crash counter.
+    read.catch(() => {})
     return Promise.race([
-      reader.read().finally(() => {
+      read.finally(() => {
         if (timeout) clearTimeout(timeout)
       }),
       new Promise((_, reject) => {
@@ -2597,6 +2678,12 @@ class RouterRuntime {
   }
 
   async handleSetsRequest(req, res, url, requestId) {
+    // 📖 Hoisted same-origin guard: covers both the canonical /sets routes and
+    // 📖 the /api/router/sets alias so no set-mutating path skips the check.
+    if (!isSameOriginOrLocal(req)) {
+      sendError(res, 403, 'Forbidden cross-origin request', 'invalid_request_error', 'forbidden_origin', requestId)
+      return
+    }
     const router = this.routerConfig()
     const setNameMatch = url.pathname.match(/^\/sets\/([^/]+)$/)
     const activateMatch = url.pathname.match(/^\/sets\/([^/]+)\/activate$/)
@@ -2833,6 +2920,12 @@ class RouterRuntime {
    * 📖 sample of probe results so the UI can show "what changed".
    */
   async handleSyncSetRequest(req, res, requestId, routeUrl = null) {
+    // 📖 Same-origin guard hoisted here so the canonical /sets/:name/sync and
+    // 📖 the /api/router/sets alias are both covered.
+    if (!isSameOriginOrLocal(req)) {
+      sendError(res, 403, 'Forbidden cross-origin request', 'invalid_request_error', 'forbidden_origin', requestId)
+      return
+    }
     const url = routeUrl || (req.url ? new URL(req.url, 'http://localhost') : null)
     const pathname = url ? url.pathname : ''
     const setSyncMatch = pathname.match(/^\/sets\/([^/]+)\/sync$/)
@@ -2900,8 +2993,41 @@ class RouterRuntime {
     }, { 'x-request-id': requestId })
   }
 
+  // 📖 Shared admission control for the SSE dashboard streams: same-origin
+  // 📖 browsers only, max 10 concurrent streams overall (MAX_SSE_CLIENTS)
+  // 📖 and max 5 per single Origin so one tab or origin cannot hog every slot.
+  tryOpenSseConnection(req, res, requestId) {
+    if (!isSameOriginOrLocal(req)) {
+      sendError(res, 403, 'Forbidden cross-origin request', 'invalid_request_error', 'forbidden_origin', requestId)
+      return false
+    }
+    if (this.sseClients.size >= MAX_SSE_CLIENTS) {
+      sendError(res, 503, 'Too many dashboard clients', 'service_unavailable', 'too_many_sse_clients', requestId)
+      return false
+    }
+    const originKey = (typeof req.headers.origin === 'string' && req.headers.origin) || 'no-origin'
+    const perOrigin = [...this.sseClients].filter((client) => (client.fcmSseOrigin || 'no-origin') === originKey).length
+    if (perOrigin >= MAX_SSE_CLIENTS_PER_ORIGIN) {
+      sendError(res, 503, 'Too many streams for this origin', 'service_unavailable', 'too_many_sse_clients', requestId)
+      return false
+    }
+    res.fcmSseOrigin = originKey
+    return true
+  }
+
   async handleHttp(req, res) {
-    const requestId = req.headers['x-request-id'] || `req-${randomUUID()}`
+    // 📖 Clamp client-supplied request ids so a giant header can't bloat
+    // 📖 logs, telemetry, and response headers.
+    const rawRequestId = req.headers['x-request-id']
+    const requestId = typeof rawRequestId === 'string' && rawRequestId.trim()
+      ? rawRequestId.trim().slice(0, 64)
+      : `req-${randomUUID()}`
+    // 📖 DNS-rebinding guard: reject requests whose Host header is not the
+    // 📖 loopback (or the configured FCM_HOST) before any routing happens.
+    if (!isAllowedHostHeader(req.headers.host, this.port, this.boundHost)) {
+      sendError(res, 403, 'Forbidden host header', 'invalid_request_error', 'forbidden_host', requestId)
+      return
+    }
     const url = new URL(req.url, `http://localhost:${this.port}`)
     try {
       if (req.method === 'GET' && url.pathname === '/health') {
@@ -2934,6 +3060,12 @@ class RouterRuntime {
         return
       }
       if (req.method === 'GET' && url.pathname === '/v1/models') {
+        // 📖 Optional shared-token auth (FCM_ROUTER_TOKEN) protects every
+        // 📖 /v1/* route; with no token configured this is a no-op.
+        if (!isAuthorizedForV1(req)) {
+          sendError(res, 401, 'Missing or invalid router token', 'invalid_request_error', 'invalid_api_key', requestId)
+          return
+        }
         const router = this.routerConfig()
         sendJson(res, 200, {
           object: 'list',
@@ -2945,10 +3077,7 @@ class RouterRuntime {
         return
       }
       if (req.method === 'GET' && url.pathname === '/stream/events') {
-        if (this.sseClients.size >= MAX_SSE_CLIENTS) {
-          sendError(res, 503, 'Too many dashboard clients', 'service_unavailable', 'too_many_sse_clients', requestId)
-          return
-        }
+        if (!this.tryOpenSseConnection(req, res, requestId)) return
         res.writeHead(200, {
           'Content-Type': 'text/event-stream',
           'Cache-Control': 'no-cache',
@@ -2963,11 +3092,19 @@ class RouterRuntime {
         return
       }
       if (url.pathname === '/daemon/shutdown' && req.method === 'POST') {
+        if (!isSameOriginOrLocal(req)) {
+          sendError(res, 403, 'Forbidden cross-origin request', 'invalid_request_error', 'forbidden_origin', requestId)
+          return
+        }
         sendJson(res, 200, { ok: true, message: 'Daemon shutting down' }, { 'x-request-id': requestId })
         setTimeout(() => this.shutdown(0), 50)
         return
       }
       if (url.pathname === '/daemon/probe-mode' && req.method === 'POST') {
+        if (!isSameOriginOrLocal(req)) {
+          sendError(res, 403, 'Forbidden cross-origin request', 'invalid_request_error', 'forbidden_origin', requestId)
+          return
+        }
         await this.handleProbeModeRequest(req, res, requestId)
         return
       }
@@ -3163,10 +3300,7 @@ class RouterRuntime {
         return
       }
       if (req.method === 'GET' && url.pathname === '/api/events') {
-        if (this.sseClients.size >= MAX_SSE_CLIENTS) {
-          sendError(res, 503, 'Too many dashboard clients', 'service_unavailable', 'too_many_sse_clients', requestId)
-          return
-        }
+        if (!this.tryOpenSseConnection(req, res, requestId)) return
         res.writeHead(200, {
           'Content-Type': 'text/event-stream',
           'Cache-Control': 'no-cache',
@@ -3185,6 +3319,10 @@ class RouterRuntime {
         return
       }
       if (req.method === 'POST' && url.pathname === '/api/benchmark') {
+        if (!isSameOriginOrLocal(req)) {
+          sendError(res, 403, 'Forbidden cross-origin request', 'invalid_request_error', 'forbidden_origin', requestId)
+          return
+        }
         const body = await readJsonBody(req)
         const providerKey = typeof body.providerKey === 'string' ? body.providerKey : ''
         const modelId = typeof body.modelId === 'string' ? body.modelId : ''
@@ -3201,6 +3339,10 @@ class RouterRuntime {
         return
       }
       if (url.pathname === '/api/global-benchmark') {
+        if (!isSameOriginOrLocal(req)) {
+          sendError(res, 403, 'Forbidden cross-origin request', 'invalid_request_error', 'forbidden_origin', requestId)
+          return
+        }
         if (req.method === 'GET') {
           sendJson(res, 200, {
             running: this.webGlobalBenchmarkRunning,
@@ -3262,8 +3404,10 @@ class RouterRuntime {
             sendError(res, 404, 'Unknown provider', 'invalid_request_error', 'unknown_provider', requestId)
             return
           }
+          // 📖 Never return the raw key over HTTP: only the masked form the
+          // 📖 dashboard already displays, plus a hasKey flag for UI state.
           const rawKey = this.getApiKeyForProvider(providerKey)
-          sendJson(res, 200, { key: rawKey || null }, { 'x-request-id': requestId })
+          sendJson(res, 200, { key: rawKey ? maskApiKey(rawKey) : null, hasKey: Boolean(rawKey) }, { 'x-request-id': requestId })
           return
         }
       }
@@ -3339,6 +3483,12 @@ class RouterRuntime {
           sendError(res, 405, 'Method not allowed', 'invalid_request_error', 'method_not_allowed', requestId, { allowed: ['POST'] })
           return
         }
+        // 📖 Optional shared-token auth (FCM_ROUTER_TOKEN) protects every
+        // 📖 /v1/* route; with no token configured this is a no-op.
+        if (!isAuthorizedForV1(req)) {
+          sendError(res, 401, 'Missing or invalid router token', 'invalid_request_error', 'invalid_api_key', requestId)
+          return
+        }
         const setMatch = url.pathname.match(/^\/v1\/sets\/([^/]+)\/chat\/completions$/)
         const body = await readJsonBody(req)
         await this.routeRequest({ req, res, body, setName: setMatch ? decodeURIComponent(setMatch[1]) : null, requestId })
@@ -3352,6 +3502,10 @@ class RouterRuntime {
       }
       if (error.code === 'INVALID_JSON') {
         sendError(res, 400, 'Invalid JSON', 'invalid_request_error', 'invalid_json', requestId, { detail: error.message })
+        return
+      }
+      if (error.code === 'UNSUPPORTED_MEDIA_TYPE') {
+        sendError(res, 415, 'Unsupported Media Type: send application/json', 'invalid_request_error', 'unsupported_media_type', requestId)
         return
       }
       this.logger.error('Internal router error', { request_id: requestId, error: error?.stack || error?.message || String(error) })
@@ -3853,11 +4007,20 @@ export async function runRouterDaemon() {
   const host = process.env.FCM_HOST || '127.0.0.1'
   const port = await listenWithFallback(server, router.port, logger, host)
   runtime.port = port
+  // 📖 Remember the bind host so the Host-header guard knows which non-loopback
+  // 📖 hostname (if any) is legitimately allowed to talk to the daemon.
+  runtime.boundHost = host
   runtime.config.router.port = port
   saveConfig(runtime.config)
   try { writeFileSync(ROUTER_PID_PATH, String(process.pid), { mode: 0o600 }) } catch (error) { logger.warn('PID file write failed', { error: error.message }) }
   try { writeFileSync(ROUTER_PORT_PATH, String(port), { mode: 0o600 }) } catch (error) { logger.warn('Port file write failed', { error: error.message }) }
   logger.info('Router daemon started', { pid: process.pid, port, host, activeSet: runtime.routerConfig().activeSet })
+  // 📖 One-time LAN warning: non-loopback binds are only useful when the
+  // 📖 origin guard knows which origins to trust, so point the user at
+  // 📖 FCM_ALLOWED_ORIGINS (comma-separated, e.g. "http://mybox:19280").
+  if (!isLoopbackHostname(host) && !(process.env.FCM_ALLOWED_ORIGINS || '').trim()) {
+    logger.warn('FCM_HOST is bound to a non-loopback address. Cross-machine browsers will be blocked unless you set FCM_ALLOWED_ORIGINS to your dashboard origin (e.g. "http://192.168.1.10:19280"). Loopback and same-origin clients keep working.')
+  }
   void sendUsageTelemetry(runtime.config, {}, {
     event: 'app_daemon_start',
     mode: 'daemon',
@@ -3959,6 +4122,17 @@ export async function startRouterDaemonBackground() {
   return { ok: false, running: false, pid: child.pid, error: 'Daemon did not become healthy before timeout' }
 }
 
+// 📖 Best-effort process command lookup used to verify a PID file before
+// 📖 signalling. Returns null when `ps` is unavailable (e.g. Windows) so the
+// 📖 caller can keep the previous behavior instead of failing hard.
+function getProcessCommand(pid) {
+  try {
+    return execFileSync('ps', ['-p', String(pid), '-o', 'command='], { encoding: 'utf8' }).trim()
+  } catch {
+    return null
+  }
+}
+
 export async function stopRouterDaemon() {
   const pidPath = getRouterPidPath()
   let pid = readNumberFile(pidPath)
@@ -3974,6 +4148,14 @@ export async function stopRouterDaemon() {
   if (!isProcessAlive(pid)) {
     try { unlinkSync(pidPath) } catch {}
     return { ok: true, stopped: false, stalePid: pid }
+  }
+  // 📖 Safety: only SIGTERM processes whose command line names this CLI. A
+  // 📖 stale or corrupted PID file could otherwise kill an unrelated process.
+  // 📖 When the platform has no `ps`, skip verification rather than breaking.
+  const command = getProcessCommand(pid)
+  if (command !== null && !command.includes('free-coding-models')) {
+    console.warn(`⚠️  PID ${pid} does not look like a free-coding-models process (${command || 'unknown command'}); not signalling`)
+    return { ok: false, stopped: false, pid, error: `PID ${pid} is not a free-coding-models process` }
   }
   process.kill(pid, 'SIGTERM')
   for (let i = 0; i < 60; i += 1) {

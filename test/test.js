@@ -22,7 +22,7 @@
 import { describe, it, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync, existsSync, accessSync, constants, chmodSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
-import { createServer as createHttpServer } from 'node:http'
+import { createServer as createHttpServer, request as httpRequest } from 'node:http'
 import { join, dirname } from 'node:path'
 import { tmpdir, homedir } from 'node:os'
 import { fileURLToPath } from 'node:url'
@@ -4340,6 +4340,73 @@ describe('router daemon integration hardening', () => {
       const after = runtime.routerConfig()
       assert.equal(after.userCustomized, true)
       assert.equal(after.autoHeal, false)
+    })
+  })
+
+  it('rejects requests with a spoofed non-loopback Host header (DNS rebinding)', async () => {
+    const config = buildRouterTestConfig([])
+    await withRouterTestServer(config, async ({ port }) => {
+      // 📖 A rebinding attack makes a public domain resolve to 127.0.0.1; the
+      // 📖 browser then sends Host: evil.com which must be refused before
+      // 📖 routing (the Origin/Referer guard alone would not catch it).
+      // 📖 node:http is used directly because undici fetch ignores Host overrides.
+      const requestWithHost = (host, path = '/health') => new Promise((resolve, reject) => {
+        const rq = httpRequest({ host: '127.0.0.1', port, path, headers: { Host: host } }, (rs) => {
+          let body = ''
+          rs.on('data', (c) => { body += c })
+          rs.on('end', () => resolve({ status: rs.statusCode, body }))
+        })
+        rq.on('error', reject)
+        rq.end()
+      })
+      const blocked = await requestWithHost('evil.example.com')
+      assert.equal(blocked.status, 403)
+      assert.equal(JSON.parse(blocked.body).error.code, 'forbidden_host')
+      // 📖 Loopback Host variants must keep working.
+      const allowed = await requestWithHost('localhost')
+      assert.equal(allowed.status, 200)
+    })
+  })
+
+  it('rejects sandboxed-iframe requests (Origin: null) on guarded endpoints', async () => {
+    const config = buildRouterTestConfig([])
+    await withRouterTestServer(config, async ({ baseUrl }) => {
+      const response = await fetch(`${baseUrl}/api/settings`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'Origin': 'null' },
+        body: JSON.stringify({ providers: { groq: { enabled: false } } }),
+      })
+      assert.equal(response.status, 403, 'Origin: null must not pass the same-origin guard')
+      const payload = await response.json()
+      assert.equal(payload.error.code, 'forbidden_origin')
+    })
+  })
+
+  it('returns a masked key (never the raw secret) from GET /api/key/:provider', async () => {
+    const config = buildRouterTestConfig([])
+    await withRouterTestServer(config, async ({ baseUrl }) => {
+      const response = await fetch(`${baseUrl}/api/key/groq`)
+      assert.equal(response.status, 200)
+      const payload = await response.json()
+      assert.equal(payload.hasKey, true)
+      assert.ok(payload.key, 'masked key should be present')
+      // 📖 'gsk-router-test' is the fixture key; the raw secret must never
+      // 📖 come back over HTTP, only the standard masked form.
+      assert.equal(payload.key.includes('gsk-router-test'), false, 'raw key must not be returned')
+      assert.match(payload.key, /^••••••••/)
+    })
+  })
+
+  it('rejects cross-origin POST /daemon/shutdown with 403', async () => {
+    const config = buildRouterTestConfig([])
+    await withRouterTestServer(config, async ({ baseUrl }) => {
+      const response = await fetch(`${baseUrl}/daemon/shutdown`, {
+        method: 'POST',
+        headers: { 'Origin': 'https://evil.example.com' },
+      })
+      assert.equal(response.status, 403, 'cross-origin daemon shutdown must be blocked')
+      const payload = await response.json()
+      assert.equal(payload.error.code, 'forbidden_origin')
     })
   })
 })

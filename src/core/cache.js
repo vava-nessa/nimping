@@ -135,8 +135,10 @@ export function saveCache(results, providerTier = 'normal') {
       providerTier
     }
 
-    // 📖 Write with secure permissions (user read/write only)
+    // 📖 Write with secure permissions (user read/write only).
+    // 📖 chmod also tightens pre-existing files created before the mode option was added.
     fs.writeFileSync(cachePath, JSON.stringify(cache, null, 2), { mode: 0o600 })
+    fs.chmodSync(cachePath, 0o600)
   } catch (err) {
     // 📖 Silently fail on write errors — caching is optional
   }

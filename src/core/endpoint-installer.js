@@ -40,14 +40,14 @@
  * @see src/tool-metadata.js
  */
 
-import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { MODELS, sources } from '../../sources.js'
 import { getApiKey, saveConfig } from './config.js'
 import { ENV_VAR_NAMES, PROVIDER_METADATA } from './provider-metadata.js'
 import { getToolMeta } from './tool-metadata.js'
-import { ensureDir, readJson as sharedReadJson } from './shared-helpers.js'
+import { ensureDir, readJson as sharedReadJson, shellSingleQuote } from './shared-helpers.js'
 
 // 📖 replicate uses /v1/predictions (not /chat/completions), so it's not OpenAI-compatible.
 // 📖 zai and opencode-zen ARE OpenAI-compatible and CAN be installed into any tool.
@@ -90,10 +90,18 @@ function readJson(filePath, fallback = {}) {
   return sharedReadJson(filePath, fallback)
 }
 
+// 📖 These configs carry plaintext API keys - 0600 at creation, chmod after write
+// 📖 so pre-existing wide-permission files get tightened too (mode only applies at creation).
+function writeSecretFile(filePath, content) {
+  ensureDirFor(filePath)
+  writeFileSync(filePath, content, { mode: 0o600 })
+  chmodSync(filePath, 0o600)
+}
+
 function writeJson(filePath, value, { backup = true } = {}) {
   ensureDirFor(filePath)
   const backupPath = backup ? backupIfExists(filePath) : null
-  writeFileSync(filePath, JSON.stringify(value, null, 2) + '\n')
+  writeSecretFile(filePath, JSON.stringify(value, null, 2) + '\n')
   return backupPath
 }
 
@@ -123,7 +131,7 @@ function writeSimpleYamlMap(filePath, entries) {
   const lines = Object.keys(entries)
     .sort()
     .map((key) => `${key}: ${JSON.stringify(String(entries[key] ?? ''))}`)
-  writeFileSync(filePath, lines.join('\n') + '\n')
+  writeSecretFile(filePath, lines.join('\n') + '\n')
   return backupPath
 }
 
@@ -463,8 +471,7 @@ function installIntoAider(providerKey, models, apiKey, paths) {
     `model: openai/${primaryModel.modelId}`,
     '',
   ]
-  ensureDirFor(paths.aiderConfigPath)
-  writeFileSync(paths.aiderConfigPath, lines.join('\n'))
+  writeSecretFile(paths.aiderConfigPath, lines.join('\n'))
   return { path: paths.aiderConfigPath, backupPath, providerId, modelCount: models.length }
 }
 
@@ -519,17 +526,17 @@ function installIntoEnvBasedTool(providerKey, models, apiKey, toolMode) {
     '# 📖 Managed by free-coding-models — source this file before launching the tool',
     `# 📖 Provider: ${getProviderLabel(providerKey)} (${models.length} models)`,
     '# 📖 Connection: Direct provider',
-    `export OPENAI_API_KEY="${effectiveApiKey}"`,
+    // 📖 Single-quote the key so quotes/$()/backticks in it stay literal on `source`.
+    `export OPENAI_API_KEY=${shellSingleQuote(effectiveApiKey)}`,
     `export OPENAI_BASE_URL="${effectiveBaseUrl}"`,
     `export OPENAI_MODEL="${effectiveModelId}"`,
-    `export LLM_API_KEY="${effectiveApiKey}"`,
+    `export LLM_API_KEY=${shellSingleQuote(effectiveApiKey)}`,
     `export LLM_BASE_URL="${effectiveBaseUrl}"`,
     `export LLM_MODEL="openai/${effectiveModelId}"`,
   ]
 
-  ensureDirFor(envFilePath)
   const backupPath = backupIfExists(envFilePath)
-  writeFileSync(envFilePath, envLines.join('\n') + '\n')
+  writeSecretFile(envFilePath, envLines.join('\n') + '\n')
   return { path: envFilePath, backupPath, providerId, modelCount: models.length }
 }
 

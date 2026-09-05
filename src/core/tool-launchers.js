@@ -48,7 +48,7 @@ import { ENV_VAR_NAMES, isWindows } from './provider-metadata.js'
 import { getToolMeta, TOOL_METADATA } from './tool-metadata.js'
 import { PROVIDER_METADATA } from './provider-metadata.js'
 import { resolveToolBinaryPath } from './tool-bootstrap.js'
-import { ensureDir, readJson, writeJson } from './shared-helpers.js'
+import { ensureDir, readJson, writeJson, shellSingleQuote } from './shared-helpers.js'
 import { parseContextWindow } from './endpoint-installer.js'
 import { resolveCloudflareUrl } from './ping.js'
 
@@ -414,10 +414,11 @@ function writeOpenHandsEnv(model, apiKey, baseUrl, paths = getDefaultToolPaths()
   const backupPath = backupIfExists(filePath)
   const lines = [
     '# 📖 Managed by free-coding-models',
-    `export OPENAI_API_KEY="${apiKey}"`,
+    // 📖 Single-quote the key so quotes/$()/backticks in it stay literal on `source`.
+    `export OPENAI_API_KEY=${shellSingleQuote(apiKey)}`,
     `export OPENAI_BASE_URL="${baseUrl}"`,
     `export OPENAI_MODEL="${model.modelId}"`,
-    `export LLM_API_KEY="${apiKey}"`,
+    `export LLM_API_KEY=${shellSingleQuote(apiKey)}`,
     `export LLM_BASE_URL="${baseUrl}"`,
     `export LLM_MODEL="openai/${model.modelId}"`,
   ]

@@ -16,7 +16,7 @@
  *   → safeJsonParse — JSON.parse with fallback
  *   → maskApiKey — Mask API key for display (show last 4 chars)
  *
- * @exports sleep, ensureDir, readJson, writeJson, atomicWriteJson, safeJsonParse, maskApiKey
+ * @exports sleep, ensureDir, readJson, writeJson, atomicWriteJson, safeJsonParse, shellSingleQuote, maskApiKey
  */
 
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
@@ -92,6 +92,17 @@ export function safeJsonParse(raw, fallback = null) {
   } catch {
     return fallback
   }
+}
+
+/**
+ * 📖 Single-quote shell escaping for values interpolated into sourced env files.
+ * 📖 Wraps the value in single quotes and escapes embedded single quotes the
+ * 📖 POSIX way (`'` -> `'\''`) so quotes, `$`, and backticks stay literal.
+ * @param {string} value
+ * @returns {string}
+ */
+export function shellSingleQuote(value) {
+  return `'${String(value).replace(/'/g, `'\\''`)}'`
 }
 
 /**

@@ -190,6 +190,11 @@ export async function playgroundSubmit(state, deps = {}) {
   const url = `http://127.0.0.1:${port}/v1/chat/completions`
   const fetchFn = deps.fetchFn || globalThis.fetch
 
+  // 📖 Non-streaming responses have no per-chunk timer, so give the whole
+  // 📖 request the same 90s ceiling. The streaming branch switches to its own
+  // 📖 per-chunk timer inside readSseStream.
+  let requestTimer = setTimeout(() => controller.abort(), STREAM_TIMEOUT_MS)
+
   try {
     const resp = await fetchFn(url, {
       method: 'POST',
@@ -205,6 +210,7 @@ export async function playgroundSubmit(state, deps = {}) {
       return
     }
     if (PLAYGROUND_OVERLAY_STATE.streamOn) {
+      clearTimeout(requestTimer)
       await readSseStream(resp, fetchFn, controller)
     } else {
       const json = await resp.json().catch(() => null)
@@ -231,6 +237,7 @@ export async function playgroundSubmit(state, deps = {}) {
       finalizeAssistantMeta({ error: PLAYGROUND_OVERLAY_STATE.lastError, aborted: true })
     }
   } finally {
+    clearTimeout(requestTimer)
     PLAYGROUND_OVERLAY_STATE.busy = false
     PLAYGROUND_OVERLAY_STATE.abortController = null
     PLAYGROUND_OVERLAY_STATE.statusMessage = null

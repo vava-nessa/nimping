@@ -2,7 +2,8 @@
  * @file web/src/components/settings/SettingsView.jsx
  * @description Full settings page — M2 parity with the TUI Settings overlay.
  * 📖 M1: API key management (per-provider cards: enable/disable, masked key,
- * 📖 reveal, copy, save, delete, search filter).
+ * 📖 reveal, save, delete, search filter). Keys are only ever shown masked:
+ * 📖 the /api/key endpoint returns the masked value, never the raw secret.
  * 📖 M2: theme dropdown, favorites display mode toggle, startup AI speed scan
  * 📖 toggle, shell-env export toggle, legacy proxy cleanup button, per-provider
  * 📖 test key button (calls /api/key/:provider/test), open Changelog link,
@@ -11,8 +12,8 @@
  */
 import { useState, useEffect, useCallback } from 'react'
 import {
-  IconSettings, IconPlug, IconCircleCheck, IconKey, IconEye, IconEyeOff, IconCopy, IconTrash,
-  IconBolt, IconCircleCheckFilled, IconHistory, IconRefresh, IconDownload, IconSun, IconStar,
+  IconSettings, IconPlug, IconCircleCheck, IconKey, IconEye, IconEyeOff,
+  IconTrash, IconBolt, IconCircleCheckFilled, IconHistory, IconRefresh, IconDownload, IconSun, IconStar,
 } from '@tabler/icons-react'
 import styles from './SettingsView.module.css'
 import { maskKey } from '../../utils/format.js'
@@ -64,35 +65,16 @@ export default function SettingsView({ onToast, onOpenChangelog, onCheckForUpdat
 
   const collapseAll = () => setExpandedCards(new Set())
 
-  const toggleRevealKey = async (key) => {
-    if (revealedKeys.has(key)) {
-      setRevealedKeys((prev) => { const n = new Set(prev); n.delete(key); return n })
-      return
-    }
-    try {
-      const resp = await fetch(`/api/key/${key}`)
-      const data = await resp.json()
-      if (data.key) {
-        setRevealedKeys((prev) => new Set(prev).add(key))
-      }
-    } catch {
-      onToast?.('Failed to reveal key', 'error')
-    }
-  }
-
-  const copyKey = async (key) => {
-    try {
-      const resp = await fetch(`/api/key/${key}`)
-      const data = await resp.json()
-      if (data.key) {
-        await navigator.clipboard.writeText(data.key)
-        onToast?.('API key copied to clipboard', 'success')
-      } else {
-        onToast?.('No key to copy', 'warning')
-      }
-    } catch {
-      onToast?.('Failed to copy key', 'error')
-    }
+  // 📖 Reveal is purely local: it flips between the fully-masked dots and the
+  // 📖 masked key (last 4 chars) served by /api/config. The raw key is never
+  // 📖 fetched or displayed - the server no longer returns it.
+  const toggleRevealKey = (key) => {
+    setRevealedKeys((prev) => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
   }
 
   const saveKey = async (key) => {
@@ -494,9 +476,6 @@ export default function SettingsView({ onToast, onOpenChangelog, onCheckForUpdat
                         <div className={styles.keyDisplayActions}>
                           <button className={styles.actionBtn} onClick={() => toggleRevealKey(key)} title={isRevealed ? 'Hide' : 'Reveal'}>
                             {isRevealed ? <IconEyeOff size={14} stroke={1.5} /> : <IconEye size={14} stroke={1.5} />}
-                          </button>
-                          <button className={styles.actionBtn} onClick={() => copyKey(key)} title="Copy">
-                            <IconCopy size={14} stroke={1.5} />
                           </button>
                           <button
                             className={styles.actionBtn}

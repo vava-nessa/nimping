@@ -696,11 +696,67 @@ function buildRecommendReason(result, answers) {
   return `${bits.join(' · ') || 'Strong catalog fit'} for ${priority.toLowerCase()} priority.`
 }
 
+// ─── Same-origin guard (mirrors src/core/router-daemon.js) ──────────────────
+
+// 📖 Loopback hostnames are always trusted: the dashboard is a local tool.
+function isLoopbackHostname(hostname) {
+  if (!hostname) return false
+  const h = hostname.toLowerCase()
+  return h === 'localhost' || h === '127.0.0.1' || h === '[::1]' || h === '::1' || h.endsWith('.localhost')
+}
+
+// 📖 FCM_ALLOWED_ORIGINS: comma-separated extra origins allowed to call the
+// 📖 dashboard, e.g. "http://mybox:3333,http://10.0.0.5:3333". Used for LAN
+// 📖 setups when the server is bound to a non-loopback FCM_HOST.
+function getAllowedOrigins() {
+  return (process.env.FCM_ALLOWED_ORIGINS || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean)
+}
+
+// 📖 Origin guard applied to every route: only loopback origins, requests
+// 📖 whose Origin matches the Host the browser is already talking to, or
+// 📖 explicitly allowed origins may call the dashboard. Non-browser clients
+// 📖 (curl, TUI, proxies) send no Origin/Referer and pass. An `Origin: null`
+// 📖 (sandboxed iframe) is rejected unless a loopback Referer accompanies it.
+function isRequestOriginAllowed(req) {
+  const origin = req.headers.origin
+  const referer = req.headers.referer || req.headers.referrer
+  const hasOrigin = typeof origin === 'string' && origin.length > 0
+  const candidates = []
+  if (hasOrigin && origin !== 'null') {
+    candidates.push(origin)
+  } else if (hasOrigin && origin === 'null') {
+    if (typeof referer !== 'string' || !referer) return false
+    candidates.push(referer)
+  } else if (typeof referer === 'string' && referer) {
+    candidates.push(referer)
+  }
+  if (candidates.length === 0) return true
+
+  const hostHeader = typeof req.headers.host === 'string' ? req.headers.host.toLowerCase() : ''
+  for (const c of candidates) {
+    try {
+      const parsed = new URL(c)
+      if (isLoopbackHostname(parsed.hostname)) return true
+      if (hostHeader && parsed.host.toLowerCase() === hostHeader) return true
+      if (getAllowedOrigins().includes(c)) return true
+    } catch {
+      return false
+    }
+  }
+  return false
+}
+
 async function handleRequest(req, res) {
+  // 📖 Same-origin guard first: never let a hostile page read this server.
+  if (!isRequestOriginAllowed(req)) {
+    res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' })
+    res.end('Forbidden cross-origin request')
+    return
+  }
   res.setHeader('X-FCM-Server', SERVER_SIGNATURE)
-  res.setHeader('Access-Control-Allow-Origin', '*')
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
 
   if (req.method === 'OPTIONS') {
     res.writeHead(204)
@@ -738,9 +794,10 @@ async function handleRequest(req, res) {
     return
   }
 
-  // 📖 Single-provider key reveal endpoint. The M2 /api/key/:provider/test
-  // 📖 route is matched above (above the switch) and uses a stricter regex
-  // 📖 (one segment, not two) so the two routes coexist cleanly.
+  // 📖 Single-provider key endpoint. Returns the MASKED key plus a hasKey
+  // 📖 flag only: the raw key never leaves the config file over HTTP. The
+  // 📖 M2 /api/key/:provider/test route is matched above and uses a stricter
+  // 📖 regex (one segment + /test) so the two routes coexist cleanly.
   const keyMatch = url.pathname.match(/^\/api\/key\/([^/]+)$/)
   if (keyMatch) {
     const providerKey = decodeURIComponent(keyMatch[1])
@@ -748,7 +805,8 @@ async function handleRequest(req, res) {
       sendJson(res, 404, { error: 'Unknown provider' })
       return
     }
-    sendJson(res, 200, { key: getApiKey(config, providerKey) || null })
+    const rawKey = getApiKey(config, providerKey)
+    sendJson(res, 200, { key: rawKey ? maskApiKey(rawKey) : null, hasKey: Boolean(rawKey) })
     return
   }
 
@@ -1886,12 +1944,17 @@ async function handleRequest(req, res) {
 }
 
 function checkPortInUse(port) {
-  return new Promise((resolve) => {
+  // 📖 Probe both the wildcard and the loopback address: macOS SO_REUSEADDR
+  // 📖 lets a wildcard probe succeed even when 127.0.0.1:port is taken (the
+  // 📖 dashboard binds loopback by default), and a loopback probe succeed
+  // 📖 when another app owns the wildcard bind. Either hit means "in use".
+  const probe = (host) => new Promise((resolve) => {
     const s = createServer()
     s.once('error', (err) => { if (err.code === 'EADDRINUSE') resolve(true); else resolve(false) })
     s.once('listening', () => { s.close(); resolve(false) })
-    s.listen(port)
+    s.listen(port, host)
   })
+  return Promise.all([probe(undefined), probe('127.0.0.1')]).then(([wildcard, loopback]) => wildcard || loopback)
 }
 
 export async function inspectExistingWebServer(port) {
@@ -1982,20 +2045,31 @@ export async function startWebServer(port = DEFAULT_WEB_PORT, { open = true, sta
     socket.on('models:refresh', () => socket.emit('models:update', getModelsPayload()))
   })
 
-  server.listen(resolvedPort, () => {
-    console.log()
-    console.log('  ⚡ free-coding-models Web Dashboard')
-    console.log(`  🌐 ${url}`)
-    console.log(`  📊 Monitoring ${results.filter((r) => !r.cliOnly).length} models across ${Object.keys(sources).length} providers`)
-    console.log()
-    console.log('  Press Ctrl+C to stop')
-    console.log()
-    if (startPingLoop && !pingLoopTimer) {
-      runtime.lastPingTime = Date.now()
-      runtime.nextPingAt = runtime.lastPingTime + runtime.activePingInterval
-      startPingCycle()
-    }
-    if (open) openBrowser(url)
+  // 📖 Bind loopback by default so the dashboard is never reachable from the
+  // 📖 LAN by accident; set FCM_HOST (e.g. "0.0.0.0" for Docker) to override.
+  // 📖 Await the actual bind so callers can hit the port as soon as this
+  // 📖 resolves (tests read server.address() right after startup).
+  const bindHost = process.env.FCM_HOST || '127.0.0.1'
+  await new Promise((resolve, reject) => {
+    const onError = (err) => reject(err)
+    server.once('error', onError)
+    server.listen(resolvedPort, bindHost, () => {
+      server.off('error', onError)
+      console.log()
+      console.log('  ⚡ free-coding-models Web Dashboard')
+      console.log(`  🌐 ${url}`)
+      console.log(`  📊 Monitoring ${results.filter((r) => !r.cliOnly).length} models across ${Object.keys(sources).length} providers`)
+      console.log()
+      console.log('  Press Ctrl+C to stop')
+      console.log()
+      if (startPingLoop && !pingLoopTimer) {
+        runtime.lastPingTime = Date.now()
+        runtime.nextPingAt = runtime.lastPingTime + runtime.activePingInterval
+        startPingCycle()
+      }
+      if (open) openBrowser(url)
+      resolve()
+    })
   })
 
   server.on('close', () => {

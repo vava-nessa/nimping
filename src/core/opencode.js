@@ -196,7 +196,9 @@ async function spawnOpenCode(args, providerKey, fcmConfig, existingZaiProxy = nu
   const { spawn } = await import('child_process')
   const child = spawn(resolveToolBinaryPath('opencode') || 'opencode', finalArgs, {
     stdio: 'inherit',
-    shell: true,
+    // 📖 Windows keeps a shell because npm-installed CLIs resolve to .cmd shims;
+    // 📖 everywhere else the resolved absolute binary path is spawned directly.
+    shell: isWindows,
     detached: false,
     env: childEnv
   })
@@ -639,28 +641,45 @@ export async function startOpenCodeDesktop(model, fcmConfig) {
   const ocModelId = getOpenCodeModelId(providerKey, model.modelId)
   const modelRef = `${providerKey}/${ocModelId}`
 
+  const printDesktopLaunchError = () => {
+    console.error(chalk.red('  Could not open OpenCode Desktop'))
+    if (isWindows) {
+      console.error(chalk.dim('    Make sure OpenCode is installed from https://opencode.ai'))
+    } else if (isLinux) {
+      console.error(chalk.dim('    Install via: snap install opencode OR flatpak install ai.opencode.OpenCode'))
+      console.error(chalk.dim('    Or download from https://opencode.ai'))
+    } else {
+      console.error(chalk.dim('    Is it installed at /Applications/OpenCode.app?'))
+    }
+  }
+
   const launchDesktop = async () => {
+    // 📖 Linux: try each launcher directly (shell:false) so modelRef is never
+    // 📖 interpolated into a shell command string. The final candidate opens the
+    // 📖 .desktop entry without a model argument.
+    if (isLinux) {
+      const { execFile } = await import('child_process')
+      const tryExecFile = (cmd, args) => new Promise((resolve) => {
+        execFile(cmd, args, (err) => resolve(!err))
+      })
+      const launched =
+        (await tryExecFile('opencode-desktop', ['--model', modelRef])) ||
+        (await tryExecFile('flatpak', ['run', 'ai.opencode.OpenCode', '--model', modelRef])) ||
+        (await tryExecFile('snap', ['run', 'opencode', '--model', modelRef])) ||
+        (await tryExecFile('xdg-open', ['/usr/share/applications/opencode.desktop']))
+      if (!launched) printDesktopLaunchError()
+      return
+    }
+
     const { exec } = await import('child_process')
     let command
     if (isMac) {
       command = 'open -a OpenCode'
     } else if (isWindows) {
       command = 'start "" "%LOCALAPPDATA%\\Programs\\OpenCode\\OpenCode.exe" 2>nul || start "" "%PROGRAMFILES%\\OpenCode\\OpenCode.exe" 2>nul || start OpenCode'
-    } else if (isLinux) {
-      command = `opencode-desktop --model ${modelRef} 2>/dev/null || flatpak run ai.opencode.OpenCode --model ${modelRef} 2>/dev/null || snap run opencode --model ${modelRef} 2>/dev/null || xdg-open /usr/share/applications/opencode.desktop 2>/dev/null || echo "OpenCode not found"`
     }
     exec(command, (err) => {
-      if (err) {
-        console.error(chalk.red('  Could not open OpenCode Desktop'))
-        if (isWindows) {
-          console.error(chalk.dim('    Make sure OpenCode is installed from https://opencode.ai'))
-        } else if (isLinux) {
-          console.error(chalk.dim('    Install via: snap install opencode OR flatpak install ai.opencode.OpenCode'))
-          console.error(chalk.dim('    Or download from https://opencode.ai'))
-        } else {
-          console.error(chalk.dim('    Is it installed at /Applications/OpenCode.app?'))
-        }
-      }
+      if (err) printDesktopLaunchError()
     })
   }
 

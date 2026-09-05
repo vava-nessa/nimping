@@ -305,7 +305,11 @@ export async function runProviderKeyTest(apiKey, providerKey, source, options = 
         headers['HTTP-Referer'] = 'https://github.com/vava-nessa/free-coding-models'
         headers['X-Title'] = 'free-coding-models'
       }
-      const modelsResp = await fetch(modelsUrl, { headers })
+      const modelsResp = await fetch(modelsUrl, {
+        headers,
+        // 📖 Same 8s ceiling as the fast-path probes so discovery can never hang.
+        signal: AbortSignal.timeout(8000),
+      })
       if (modelsResp.ok) {
         const data = await modelsResp.json()
         discoveredModelIds.push(...parseProviderModelIds(data))
@@ -316,7 +320,11 @@ export async function runProviderKeyTest(apiKey, providerKey, source, options = 
         discoveryNote = `Live model discovery returned HTTP ${modelsResp.status}; falling back to the repo catalog.`
       }
     } catch (err) {
-      discoveryNote = `Live model discovery failed (${err?.name || 'error'}); falling back to the repo catalog.`
+      // 📖 AbortSignal.timeout rejects with TimeoutError; treat it like the fast-path timeout.
+      const timedOut = err?.name === 'TimeoutError' || err?.name === 'AbortError'
+      discoveryNote = timedOut
+        ? 'Live model discovery timed out; falling back to the repo catalog.'
+        : `Live model discovery failed (${err?.name || 'error'}); falling back to the repo catalog.`
     }
   }
 

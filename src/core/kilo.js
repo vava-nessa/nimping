@@ -7,7 +7,7 @@ import chalk from 'chalk'
 import { sources } from '../../sources.js'
 import { loadKiloConfig, saveKiloConfig, getKiloConfigPath } from './kilo-config.js'
 import { getApiKey } from './config.js'
-import { ENV_VAR_NAMES, OPENCODE_MODEL_MAP } from './provider-metadata.js'
+import { ENV_VAR_NAMES, OPENCODE_MODEL_MAP, isWindows } from './provider-metadata.js'
 import { resolveToolBinaryPath } from './tool-bootstrap.js'
 
 // 📖 Map source model IDs to Kilo built-in IDs (same as OpenCode).
@@ -45,7 +45,9 @@ async function spawnKilo(args, providerKey, fcmConfig) {
   const { spawn } = await import('child_process')
   const child = spawn(resolveToolBinaryPath('kilo') || 'kilo', finalArgs, {
     stdio: 'inherit',
-    shell: true,
+    // 📖 Windows keeps a shell because npm-installed CLIs resolve to .cmd shims;
+    // 📖 everywhere else the resolved absolute binary path is spawned directly.
+    shell: isWindows,
     detached: false,
     env: childEnv
   })

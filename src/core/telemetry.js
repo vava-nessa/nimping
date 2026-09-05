@@ -10,7 +10,7 @@
  *   - PostHog is used for product analytics (`app_start`, `app_use`, and lightweight
  *     `app_action` events covering launches and key product actions).
  *   - Discord webhooks carry anonymous feature requests (J key) and bug reports (I key).
- *   - `isTelemetryEnabled()` checks: CLI flag → env var → default (enabled).
+ *   - `isTelemetryEnabled()` checks: CLI flag → env var → config opt-out → default (enabled).
  *   - `telemetryDebug()` writes to stderr only when FREE_CODING_MODELS_TELEMETRY_DEBUG=1.
  *   - `sendUsageTelemetry()` has a hard 1.2 s timeout so it never blocks startup.
  *
@@ -20,6 +20,8 @@
  *   - FREE_CODING_MODELS_POSTHOG_KEY             — override the PostHog project key
  *   - FREE_CODING_MODELS_POSTHOG_HOST            — override the PostHog host
  *   - POSTHOG_PROJECT_API_KEY / POSTHOG_HOST     — standard PostHog env vars (fallback)
+ *   - FCM_DISCORD_FEATURE_WEBHOOK                - feature request webhook URL
+ *   - FCM_DISCORD_BUG_WEBHOOK                    - bug report webhook URL
  *
  * @functions
  *   → parseTelemetryEnv(value)                    — Convert env string to boolean or null
@@ -63,12 +65,15 @@ const POSTHOG_PROJECT_KEY_DEFAULT = 'phc_5P1n8HaLof6nHM0tKJYt4bV5pj2XPb272fLVigw
 const POSTHOG_HOST_DEFAULT       = 'https://eu.i.posthog.com'
 
 // 📖 Discord feature request webhook configuration (anonymous feedback system).
-const DISCORD_WEBHOOK_URL   = 'https://discord.com/api/webhooks/1476709155992764427/hmnHNtpducvi5LClhv8DynENjUmmg9q8HI1Bx1lNix56UHqrqZf55rW95LGvNJ2W4j7D'
+// 📖 FCM_DISCORD_FEATURE_WEBHOOK: env var holding the feature-request webhook URL.
+// 📖 When unset, the feature request action reports "not configured" instead of posting.
+const DISCORD_WEBHOOK_URL   = (process.env.FCM_DISCORD_FEATURE_WEBHOOK || '').trim()
 const DISCORD_BOT_NAME      = 'TUI - Feature Requests'
 const DISCORD_EMBED_COLOR   = 0x39FF14  // Vert fluo (RGB: 57, 255, 20)
 
 // 📖 Discord bug report webhook configuration (anonymous bug reports).
-const DISCORD_BUG_WEBHOOK_URL  = 'https://discord.com/api/webhooks/1476715954409963743/5cOLf7U_891f1jwxRBLIp2RIP9xYhr4rWtOhipzKKwVdFVl1Bj89X_fB6I_uGXZiGT9E'
+// 📖 FCM_DISCORD_BUG_WEBHOOK: env var holding the bug report webhook URL.
+const DISCORD_BUG_WEBHOOK_URL  = (process.env.FCM_DISCORD_BUG_WEBHOOK || '').trim()
 const DISCORD_BUG_BOT_NAME     = 'TUI Bug Report'
 const DISCORD_BUG_EMBED_COLOR  = 0xFF5733  // Rouge (RGB: 255, 87, 51)
 
@@ -194,7 +199,7 @@ export function getTelemetryTerminal() {
 
 /**
  * 📖 Resolve telemetry effective state with clear precedence:
- * 📖 CLI flag > env var > enabled by default (forced for all users).
+ * 📖 CLI flag > env var > config opt-out > enabled by default.
  * @param {Record<string, unknown>} config
  * @param {{ noTelemetry?: boolean }} cliArgs
  * @returns {boolean}
@@ -204,7 +209,9 @@ export function isTelemetryEnabled(config, cliArgs) {
   const envTelemetry = parseTelemetryEnv(process.env.FREE_CODING_MODELS_TELEMETRY)
   if (envTelemetry !== null) return envTelemetry
   ensureTelemetryConfig(config)
-  return true
+  // 📖 Honor a persisted opt-out (config telemetry.enabled=false) set from the UI;
+  // 📖 CLI flags and FREE_CODING_MODELS_TELEMETRY still override it above.
+  return config.telemetry.enabled !== false
 }
 
 /**
@@ -314,6 +321,9 @@ export async function sendUsageTelemetry(config, cliArgs, payload) {
  * @returns {Promise<{ success: boolean, error: string|null }>}
  */
 export async function sendFeatureRequest(message) {
+  if (!DISCORD_WEBHOOK_URL) {
+    return { success: false, error: 'feedback webhook not configured (set FCM_DISCORD_FEATURE_WEBHOOK)' }
+  }
   try {
     // 📖 Collect anonymous telemetry for context (no personal data)
     const system = getTelemetrySystem()
@@ -361,6 +371,9 @@ export async function sendFeatureRequest(message) {
  * @returns {Promise<{ success: boolean, error: string|null }>}
  */
 export async function sendBugReport(message) {
+  if (!DISCORD_BUG_WEBHOOK_URL) {
+    return { success: false, error: 'feedback webhook not configured (set FCM_DISCORD_BUG_WEBHOOK)' }
+  }
   try {
     // 📖 Collect anonymous telemetry for context (no personal data)
     const system = getTelemetrySystem()

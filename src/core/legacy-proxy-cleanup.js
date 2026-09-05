@@ -23,7 +23,7 @@
  * @exports cleanupLegacyProxyArtifacts
  */
 
-import { existsSync, readFileSync, writeFileSync, unlinkSync, readdirSync } from 'node:fs'
+import { chmodSync, existsSync, readFileSync, writeFileSync, unlinkSync, readdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
@@ -82,7 +82,9 @@ function noteError(summary, filePath, error) {
 }
 
 // 📖 Thin wrappers: readJsonFile propagates parse errors (callers have try/catch).
-// 📖 writeJsonFile appends a trailing newline for clean diffs.
+// 📖 writeJsonFile appends a trailing newline for clean diffs. These configs can
+// 📖 carry plaintext API keys, so tighten permissions after every write (chmod
+// 📖 also fixes pre-existing files that were created wide-permission).
 function readJsonFile(filePath, fallback = null) {
   if (!existsSync(filePath)) return fallback
   return JSON.parse(readFileSync(filePath, 'utf8'))
@@ -90,6 +92,7 @@ function readJsonFile(filePath, fallback = null) {
 
 function writeJsonFile(filePath, value) {
   writeFileSync(filePath, JSON.stringify(value, null, 2) + '\n')
+  chmodSync(filePath, 0o600)
 }
 
 function deleteFileIfExists(filePath, summary) {
@@ -262,7 +265,8 @@ function writeSimpleYamlMap(filePath, entries) {
   const lines = Object.keys(entries)
     .sort()
     .map((key) => `${key}: ${JSON.stringify(String(entries[key] ?? ''))}`)
-  writeFileSync(filePath, lines.join('\n') + '\n')
+  writeFileSync(filePath, lines.join('\n') + '\n', { mode: 0o600 })
+  chmodSync(filePath, 0o600)
 }
 
 function cleanupGoose(paths, summary) {
