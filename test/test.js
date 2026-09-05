@@ -1795,8 +1795,9 @@ describe('renderTable responsive column visibility', () => {
   // 📖 Ping columns are permanently compact: Last Ping and Avg Ping both use 9 chars.
   // 📖 Compact mode shrinks Stability, Provider, Health, and AI Latency before hiding optional columns.
 
-  it('shows all columns and compact ping labels at very wide terminal (200 cols)', () => {
-    const output = renderAtWidth(200)
+  it('shows all columns and compact ping labels at very wide terminal (206 cols)', () => {
+    // 📖 206 = full table width (203 since Provider column grew 11 → 15) + margin
+    const output = renderAtWidth(206)
     assert.match(output, /Rank/)
     assert.match(output, /Tier/)
     assert.match(output, /Up%/)
@@ -1809,6 +1810,13 @@ describe('renderTable responsive column visibility', () => {
     assert.match(output, /Provider|PrOviDer/)
     assert.match(output, /AI Latency/)
     assert.match(output, /TPS/)
+  })
+
+  it('truncates provider names above 14 chars so rows stay aligned', () => {
+    // 📖 'Pollinations AI' (15 chars) exceeds MAX_PROVIDER_NAME_LEN → 'Pollinations…'
+    const output = renderTable({ results: [mockResult({ providerKey: 'pollinations', totalTokens: 0, pings: [{ ms: 200, code: '200' }] })], sortColumn: 'avg', sortDirection: 'asc', pingInterval: 10_000, lastPingTime: Date.now(), mode: 'opencode', terminalRows: 30, terminalCols: 206, pingMode: 'normal', pingModeSource: 'auto', settingsUpdateState: 'idle', versionAlertsEnabled: false })
+    assert.match(output, /Pollinations…/)
+    assert.doesNotMatch(output, /Pollinations AI/)
   })
 
   it('keeps ping columns at the same 9-char width', () => {
@@ -7444,5 +7452,36 @@ describe('renderCommandPalette limited terminals (issue #169)', () => {
     assert.ok(l.commandPaletteRight <= 40, `right edge ${l.commandPaletteRight} must be <= 40`)
     assert.ok(l.commandPaletteTop >= 1, 'top edge on screen')
     assert.ok(l.commandPaletteBottom <= 12, `bottom edge ${l.commandPaletteBottom} must be <= 12`)
+  })
+
+  it('paints only the panel cells: no margin filler and no edge-to-edge erase', () => {
+    // 📖 Regression: rows used to be emitted from col 1 with unstyled margin
+    // 📖 spaces plus a trailing \x1b[K. Both inherited the panel tint bg that
+    // 📖 was still active, filling the full screen width with panel background
+    // 📖 and masking the frozen table beside the modal on wide terminals.
+    const render = buildPaletteRenderer({ cols: 120, rows: 30 })
+    const output = render()
+    assert.ok(!output.includes('\x1b[K'), 'palette must not emit \\x1b[K (it fills the tint bg to the screen edge)')
+    for (const line of parsePositionedLines(output)) {
+      assert.ok(line.col > 1, `row ${line.row} must start at the panel column (got col ${line.col})`)
+    }
+  })
+
+  it('keeps the panel height constant when the result list shrinks', () => {
+    // 📖 Nothing repaints below the panel while it is open (frozen table), so a
+    // 📖 shrinking panel would leave stale painted rows under its bottom edge.
+    const fullCount = parsePositionedLines(buildPaletteRenderer({ cols: 40, rows: 12 })()).length
+    const state = {
+      commandPaletteOpen: true,
+      commandPaletteResults: [{ label: 'Alpha', type: 'command' }, { label: 'Beta', type: 'command' }],
+      commandPaletteCursor: 0,
+      commandPaletteScrollOffset: 0,
+      commandPaletteQuery: '',
+      terminalRows: 12,
+      terminalCols: 40,
+      config: { apiKeys: {}, providers: {}, settings: {} },
+    }
+    const fewCount = parsePositionedLines(createOverlayRenderers(state, paletteDeps()).renderCommandPalette()).length
+    assert.equal(fewCount, fullCount, 'panel must keep rendering bodyRows lines even with fewer results')
   })
 })

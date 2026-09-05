@@ -1075,8 +1075,15 @@ export async function runApp(cliArgs, config, startupOptions = {}) {
         // 📖 Freeze the full table (including countdown and spinner glyphs) while
         // 📖 the command palette is open so the background remains perfectly static.
         state.commandPaletteFrozenTable = renderTable(tableOpts)
+        tableContent = state.commandPaletteFrozenTable
+      } else {
+        // 📖 The frozen table is already on screen and cannot change while the
+        // 📖 palette is open, so repaint the palette alone. Repainting the full
+        // table every frame made large terminals flicker: the write gets split
+        // into chunks, so the terminal showed the bare table for a moment
+        // before the palette overlay painted over it, 30 times per second.
+        tableContent = null
       }
-      tableContent = state.commandPaletteFrozenTable
     } else {
       state.commandPaletteFrozenTable = null
       tableContent = renderTable(tableOpts)
@@ -1101,7 +1108,7 @@ export async function runApp(cliArgs, config, startupOptions = {}) {
       : state.incompatibleFallbackOpen
         ? overlays.renderIncompatibleFallback()
       : state.commandPaletteOpen
-        ? tableContent + overlays.renderCommandPalette()
+        ? (tableContent || '') + overlays.renderCommandPalette()
       : state.recommendOpen
         ? overlays.renderRecommend()
         : state.helpVisible

@@ -314,7 +314,13 @@ export function renderTable({
   const W_RANK = 6
   const W_TIER = 5
   const W_CTX = 4
-  const W_SOURCE = 11
+  const W_SOURCE = 15
+  // 📖 Provider names are display-capped at MAX_PROVIDER_NAME_LEN chars so an
+  // 📖 over-long label can never push the following cells and desalign the
+  // 📖 whole row (Cloudflare AI at 13 chars overflowed the old 11-wide column).
+  // 📖 Anything longer is cut to 13 chars + '…' = 14 visible chars. Keep new
+  // 📖 provider names in sources.js at MAX_PROVIDER_NAME_LEN chars or less.
+  const MAX_PROVIDER_NAME_LEN = 14
   const W_MODEL = 26
   const W_SWE = 5
   const W_STATUS = 17
@@ -719,11 +725,15 @@ export function renderTable({
     const tier = tierFn(r.tier.padEnd(W_TIER))
     // 📖 Keep terminal view provider-specific so each row is monitorable per provider
     // 📖 In compact mode, truncate provider name to 4 chars + '…'
+    // 📖 In normal mode, cap names at MAX_PROVIDER_NAME_LEN chars (13 + '…')
+    // 📖 so an over-long label never shifts every cell to its right.
     const providerNameRaw = sources[r.providerKey]?.name ?? r.providerKey ?? 'NIM'
     const providerName = normalizeOriginLabel(providerNameRaw, r.providerKey)
     const providerDisplay = isCompact && providerName.length > 5
       ? providerName.slice(0, 4) + '…'
-      : providerName
+      : providerName.length > MAX_PROVIDER_NAME_LEN
+        ? providerName.slice(0, MAX_PROVIDER_NAME_LEN - 1).trimEnd() + '…'
+        : providerName
     const source = themeColors.provider(r.providerKey, providerDisplay.padEnd(wSource))
     // 📖 Prefix: ⭐ favorite > 🎯 recommended > 🆕 new — only one emoji, never shifts the line
     const modelIsNew = isNewModel(r.addedDate)

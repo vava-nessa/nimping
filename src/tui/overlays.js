@@ -856,6 +856,11 @@ export function createOverlayRenderers(state, deps) {
     }
 
     const targetLine = cursorLineByRow[state.commandPaletteCursor] ?? 0
+    // 📖 Pad short result lists up to bodyRows so the panel height stays constant
+    // 📖 while typing: nothing repaints the cells below a shrunken panel (the
+    // 📖 table behind is frozen while the palette is open), so a shrinking panel
+    // 📖 would leave stale painted rows hanging under its bottom edge.
+    while (panelLines.length < bodyRows) panelLines.push('')
     state.commandPaletteScrollOffset = keepOverlayTargetVisible(
       state.commandPaletteScrollOffset,
       targetLine,
@@ -922,11 +927,16 @@ export function createOverlayRenderers(state, deps) {
       return sty.overlayBgCommandPalette(padded)
     })
 
-    // 📖 Emit each row from column 1 and clear to end of line so stale table cells
-    // 📖 in the margins beside the panel can never bleed through (the artifacts
-    // 📖 reported in issue #169). \x1b[K never wraps: panel right edge <= cols.
+    // 📖 Emit each row directly at the panel's left column: no margin filler and
+    // 📖 no \x1b[K. The old form (col 1 + margin spaces + \x1b[K) painted the
+    // 📖 panel tint across the full screen width because the margin spaces and
+    // 📖 the erase-to-EOL both inherit the tint background still active from the
+    // 📖 previous row. On wide terminals that grew a giant dark rectangle over
+    // 📖 the frozen table on both sides of the panel, repainted every frame.
+    // 📖 Rows are width-budgeted and the panel is screen-clamped, so a row can
+    // 📖 never overflow past the terminal edge (the real issue #169 artifact).
     return tintedLines
-      .map((line, idx) => `\x1b[${top + idx};1H${' '.repeat(left - 1)}${line}\x1b[K`)
+      .map((line, idx) => `\x1b[${top + idx};${left}H${line}`)
       .join('')
   }
 
