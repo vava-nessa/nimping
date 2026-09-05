@@ -15,7 +15,7 @@
 
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { sortResults, getVersionStatusInfo } from '../src/utils.js'
+import { sortResults, getVersionStatusInfo } from '../src/core/utils.js'
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 

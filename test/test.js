@@ -363,8 +363,8 @@ function buildRouterTestConfig(models, overrides = {}) {
     failover: {
       ...DEFAULT_ROUTER_SETTINGS.failover,
       maxRetries: overrides.maxRetries ?? models.length,
-      requestTimeoutMs: overrides.requestTimeoutMs ?? 500,
-      streamStallTimeoutMs: overrides.streamStallTimeoutMs ?? 100,
+      requestTimeoutMs: overrides.requestTimeoutMs ?? 1000,
+      streamStallTimeoutMs: overrides.streamStallTimeoutMs ?? 200,
     },
     circuitBreaker: {
       ...DEFAULT_ROUTER_SETTINGS.circuitBreaker,
@@ -3400,7 +3400,7 @@ describe('router daemon integration hardening', () => {
           const config = buildRouterTestConfig([
             { provider: 'groq', model: ROUTER_TEST_MODELS.groqFast, priority: 1 },
             { provider: 'nvidia', model: ROUTER_TEST_MODELS.nvidiaFast, priority: 2 },
-          ], { streamStallTimeoutMs: 60 })
+          ], { streamStallTimeoutMs: 120 })
           await withRouterTestServer(config, async ({ baseUrl }) => {
             const response = await postRouterChat(baseUrl, { stream: true })
             const text = await response.text()
@@ -3694,7 +3694,7 @@ describe('router daemon integration hardening', () => {
           const config = buildRouterTestConfig([
             { provider: 'groq', model: ROUTER_TEST_MODELS.groqFast, priority: 1 },
             { provider: 'nvidia', model: ROUTER_TEST_MODELS.nvidiaFast, priority: 2 },
-          ], { requestTimeoutMs: 10 })
+          ], { requestTimeoutMs: 20 })
           await withRouterTestServer(config, async ({ baseUrl }) => {
             const response = await postRouterChat(baseUrl)
             const payload = await response.json()

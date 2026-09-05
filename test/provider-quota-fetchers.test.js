@@ -19,7 +19,7 @@ import {
   parseSiliconFlowResponse,
   createProviderQuotaFetcher,
   fetchProviderQuota,
-} from '../src/provider-quota-fetchers.js'
+} from '../src/core/provider-quota-fetchers.js'
 
 // ─── parseOpenRouterResponse ──────────────────────────────────────────────────
 

@@ -10,7 +10,7 @@ import assert from 'node:assert/strict'
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { loadUsageSnapshot, loadUsageMap, usageForModelId, usageForRow, SNAPSHOT_TTL_MS, CACHE_TTL_MS, clearUsageCache, buildUsageSnapshotKey } from '../src/usage-reader.js'
+import { loadUsageSnapshot, loadUsageMap, usageForModelId, usageForRow, SNAPSHOT_TTL_MS, CACHE_TTL_MS, clearUsageCache, buildUsageSnapshotKey } from '../src/core/usage-reader.js'
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -81,16 +81,21 @@ describe('usage-reader – loadUsageMap', () => {
   })
 
   it('includes quotaPercent for provider-scoped entry with updatedAt', () => {
+    // BEHAVIOR UPDATE (quality pass): snapshots are now gated by quota
+    // capabilities. Only providers with usageDisplay 'percent' are surfaced;
+    // a fresh entry for an 'ok'-display provider must NOT leak into the map.
     ctx.write({
       quotaSnapshots: {
         byAccount: {},
         byProviderModel: {
+          [buildUsageSnapshotKey('cerebras', 'llama-4')]: { quotaPercent: 60, updatedAt: freshTs(), providerKey: 'cerebras', modelId: 'llama-4' },
           [buildUsageSnapshotKey('googleai', 'gemini-pro')]: { quotaPercent: 60, updatedAt: freshTs(), providerKey: 'googleai', modelId: 'gemini-pro' },
         },
       },
     })
     const map = loadUsageMap(ctx.statsFile)
-    assert.strictEqual(map['googleai::gemini-pro'], 60)
+    assert.strictEqual(map['cerebras::llama-4'], 60, 'percent-capable provider entry must be included')
+    assert.strictEqual(map['googleai::gemini-pro'], undefined, 'ok-display provider entry must be gated out')
   })
 
   it('skips byProviderModel entries missing quotaPercent field', () => {
@@ -370,6 +375,10 @@ describe('usage-reader – snapshot freshness TTL', () => {
   })
 
   it('loadUsageSnapshot excludes stale provider entry (updatedAt older than TTL)', () => {
+    // BEHAVIOR UPDATE (quality pass): byProvider entries are keyed by real
+    // providerKey and gated by quota capabilities, so use percent-capable
+    // providers. openrouter has resetCadence 'unknown' (no daily invalidation),
+    // keeping the fresh-entry assertion deterministic regardless of midnight.
     const staleTime = new Date(Date.now() - 45 * 60 * 1000).toISOString() // 45 min ago
     const freshTime = new Date(Date.now() - 5 * 60 * 1000).toISOString() // 5 min ago
     ctx.write({
@@ -378,14 +387,14 @@ describe('usage-reader – snapshot freshness TTL', () => {
           'groq::model-b': { quotaPercent: 80, updatedAt: freshTime, providerKey: 'groq', modelId: 'model-b' },
         },
         byProvider: {
-          'stale-provider': { quotaPercent: 70, updatedAt: staleTime },
-          'fresh-provider': { quotaPercent: 60, updatedAt: freshTime },
+          groq: { quotaPercent: 70, updatedAt: staleTime },
+          openrouter: { quotaPercent: 60, updatedAt: freshTime },
         },
       },
     })
     const snap = loadUsageSnapshot(ctx.statsFile)
-    assert.ok(!('stale-provider' in snap.byProvider), 'stale provider must be excluded')
-    assert.strictEqual(snap.byProvider['fresh-provider'], 60, 'fresh provider must be included')
+    assert.ok(!('groq' in snap.byProvider), 'stale provider must be excluded')
+    assert.strictEqual(snap.byProvider.openrouter, 60, 'fresh provider must be included')
   })
 
   it('usageForRow returns null when model snapshot is stale (falls back to provider, but provider also stale)', () => {
@@ -405,19 +414,22 @@ describe('usage-reader – snapshot freshness TTL', () => {
   })
 
   it('usageForRow uses fresh provider fallback when model is stale', () => {
+    // BEHAVIOR UPDATE (quality pass): usageForRow returns null for providers
+    // without usageDisplay 'percent', so the fallback scenario now uses a real
+    // percent-capable provider (openrouter, no daily reset => deterministic).
     const staleTime = new Date(Date.now() - 40 * 60 * 1000).toISOString()
     const freshTime = new Date(Date.now() - 2 * 60 * 1000).toISOString()
     ctx.write({
       quotaSnapshots: {
         byProviderModel: {
-          'fresh-prov::stale-model': { quotaPercent: 50, updatedAt: staleTime, providerKey: 'fresh-prov', modelId: 'stale-model' },
+          'openrouter::stale-model': { quotaPercent: 50, updatedAt: staleTime, providerKey: 'openrouter', modelId: 'stale-model' },
         },
         byProvider: {
-          'fresh-prov': { quotaPercent: 72, updatedAt: freshTime },
+          openrouter: { quotaPercent: 72, updatedAt: freshTime },
         },
       },
     })
-    const result = usageForRow('fresh-prov', 'stale-model', ctx.statsFile)
+    const result = usageForRow('openrouter', 'stale-model', ctx.statsFile)
     assert.strictEqual(result, 72, 'stale model snapshot must fall back to fresh provider')
   })
 

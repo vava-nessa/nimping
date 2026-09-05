@@ -76,3 +76,7 @@ export function testProfileKeysMerge() {
     })
   })
 }
+
+// Self-register when run by `node --test` (the file only exported the runner,
+// so the suite was silently collected as zero tests before this call).
+testProfileKeysMerge()

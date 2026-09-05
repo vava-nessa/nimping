@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { resolveApiKeys, normalizeApiKeyConfig, addApiKey, removeApiKey, listApiKeys } from '../src/config.js'
+import { resolveApiKeys, normalizeApiKeyConfig, addApiKey, removeApiKey, listApiKeys } from '../src/core/config.js'
 
 describe('resolveApiKeys', () => {
   it('returns single key as array', () => {
