@@ -160,6 +160,10 @@ export async function overlayModelsDevMetadata(mergedModels, opts = {}) {
       }
     }
     if (!bestMatch && m.slug) bestMatch = lookup(m.slug, m.label, index)
+    // 📖 Skip substring matches entirely: a label-only match can bind the WRONG
+    // 📖 catalog model and overwrite the curated ctx window with its value
+    // 📖 (detectDrift ignores substring matches for the same reason).
+    if (bestMatch && bestMatch.matchKind === 'substring') bestMatch = null
     if (!bestMatch) {
       if (opts.mutate) {
         Object.assign(m, { modelsDevMeta: null, metaSource: 'sources.js' })

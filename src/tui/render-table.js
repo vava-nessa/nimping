@@ -76,6 +76,12 @@ let _lastLayout = {
   hasBelowIndicator: false, // 📖 whether "... N more below ..." is shown
   footerHotkeys: [],  // 📖 Array of { key, row, xStart, xEnd } for footer click zones
   updateBannerRow: 0, // 📖 1-based terminal row of the fluorescent update banner (0 = none)
+  // 📖 Space-expanded detail card (issue #168): the 2 extra lines rendered under
+  // 📖 the cursor row shift every following row down. expandedDetailAfterIdx is
+  // 📖 the sorted index the card belongs to; the mouse handler subtracts
+  // 📖 expandedDetailRows from row offsets BELOW it so clicks map to the right model.
+  expandedDetailAfterIdx: -1,
+  expandedDetailRows: 0,
 }
 export function getLastLayout() { return _lastLayout }
 
@@ -691,6 +697,22 @@ export function renderTable({
     }
     return out
   }
+  // 📖 clipToWidth: Width-aware HARD clip without ellipsis (used for the Model
+  // 📖 column label). The old `r.label.slice(0, nameWidth)` cut by UTF-16 units
+  // 📖 and could split surrogate pairs, rendering emoji model names as mojibake.
+  // 📖 This walks code points and stops at the max DISPLAY width instead.
+  const clipToWidth = (text, max) => {
+    if (max <= 0) return ''
+    let w = 0
+    let out = ''
+    for (const ch of String(text)) {
+      const cw = displayWidth(ch)
+      if (w + cw > max) break
+      out += ch
+      w += cw
+    }
+    return out
+  }
   const paintSweScore = (score, paddedText) => {
     if (score >= 70) return chalk.bold.rgb(...getTierRgb('S+'))(paddedText)
     if (score >= 60) return chalk.bold.rgb(...getTierRgb('S'))(paddedText)
@@ -713,6 +735,9 @@ export function renderTable({
   _lastLayout.viewportEndIdx = vp.endIdx
   _lastLayout.hasAboveIndicator = vp.hasAbove
   _lastLayout.hasBelowIndicator = vp.hasBelow
+  // 📖 Reset per-frame expansion layout info (re-set below when a card renders).
+  _lastLayout.expandedDetailAfterIdx = -1
+  _lastLayout.expandedDetailRows = 0
 
   for (let i = vp.startIdx; i < vp.endIdx; i++) {
     const r = sorted[i]
@@ -747,7 +772,9 @@ export function renderTable({
     }
     const prefixDisplayWidth = displayWidth(favoritePrefix)
     const nameWidth = Math.max(0, wModel - prefixDisplayWidth)
-    const name = favoritePrefix + r.label.slice(0, nameWidth).padEnd(nameWidth)
+    // 📖 Width-aware clip + display padding keeps emoji labels intact and the
+    // 📖 column perfectly aligned (see clipToWidth above).
+    const name = favoritePrefix + padEndDisplay(clipToWidth(r.label, nameWidth), nameWidth)
     const sweScore = r.sweScore ?? '—'
     // 📖 SWE% colorized on the same gradient as Tier:
     //   ≥70% bright neon green (S+), ≥60% green (S), ≥50% yellow-green (A+),
@@ -1090,6 +1117,10 @@ export function renderTable({
     // 📖 truncate them. Plain text is built first, clipped to the terminal
     // 📖 width, then colorized (same pattern as the table header).
     if (isCursor && expansionActive) {
+      // 📖 Mouse support (fix 15): record that 2 extra rows follow sorted index i
+      // 📖 so the click handler can shift row mappings below the card.
+      _lastLayout.expandedDetailAfterIdx = i
+      _lastLayout.expandedDetailRows = EXPANDED_DETAIL_LINES
       const maxDetailWidth = Math.max(0, (terminalCols || 80) - 4)
       const keyText = r.hasApiKey ? 'key configured' : 'no key'
       const endpoint = sources[r.providerKey]?.url ?? 'unknown endpoint'
@@ -1390,9 +1421,9 @@ export function renderTable({
   if (releaseLabel || speedTestLabel || globalBenchmarkLabel || probeLabel || probeCacheLabel || pausedProvidersLabel || enrichmentLabel || quotaLabel || actionErrorLabel) {
     const parts = [
       { text: '  ', key: null },
-      { text: speedTestLabel, key: 'a' },
+      { text: speedTestLabel, key: 'ctrl+a' },
       { text: '  ', key: null },
-      { text: globalBenchmarkLabel, key: 'u' },
+      { text: globalBenchmarkLabel, key: 'ctrl+u' },
       { text: probeLabel ? '  ' : '', key: null },
       { text: probeLabel, key: null },
       { text: actionErrorLabel ? '  ' : '', key: null },

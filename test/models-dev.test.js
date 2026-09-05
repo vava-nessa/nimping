@@ -309,12 +309,31 @@ describe('detectDrift', () => {
     assert.equal(glmDrift.modelsDevValue, 256_000)
   })
 
-  it('detects maxTokens add when sources.js has no value', () => {
-    // 📖 sources.js has no maxTokens column by default → all maxTokens are "add" candidates
+  it('detects maxTokens add for object-form entries only (tuple form has no flag columns)', () => {
+    // 📖 Tuple entries are arity 5 and carry no maxTokens/reasoning/vision/thinking
+    // 📖 columns, so flagMatch(undefined, true) used to fabricate a bogus "add" for
+    // 📖 every capable model and bury real ctx drift. Only object-form entries,
+    // 📖 which can actually hold these fields, are compared now.
     const idx = buildModelIndex(SAMPLE_CATALOG)
     const drift = detectDrift(SAMPLE_MODELS, SAMPLE_CATALOG, { index: idx })
-    const maxAdd = drift.filter(d => d.field === 'maxTokens' && d.action === 'add')
-    assert.ok(maxAdd.length > 0, 'expected at least one maxTokens add')
+    const tupleMaxAdd = drift.filter(d => d.field === 'maxTokens' && d.action === 'add')
+    assert.equal(tupleMaxAdd.length, 0, 'tuple-form entries must not report maxTokens adds')
+
+    const objectModels = [
+      { modelId: 'deepseek/deepseek-chat', label: 'DeepSeek Chat', ctx: '128k' },
+      // 📖 GLM 5.2 is reasoning-capable in the catalog; an object entry that omits
+      // 📖 the flag should yield a reasoning "add", ctx matches so no ctx noise.
+      { modelId: 'nvidiaNim/z-ai/glm-5.2', label: 'GLM 5.2', ctx: '256k' },
+    ]
+    const objectDrift = detectDrift(objectModels, SAMPLE_CATALOG, { index: idx })
+    assert.ok(
+      objectDrift.some(d => d.field === 'maxTokens' && d.action === 'add'),
+      'object-form entry without maxTokens should report an add',
+    )
+    assert.ok(
+      objectDrift.some(d => d.field === 'reasoning' && d.action === 'add'),
+      'object-form entry without reasoning flag should report an add',
+    )
   })
 
   it('does NOT report ctx drift when values match (within 5% tolerance)', () => {

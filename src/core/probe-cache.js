@@ -104,6 +104,14 @@ const CACHE_DIRNAME = 'free-coding-models'
 let _cache = null
 let _cacheLoadedFrom = null  // path we last loaded from (for write-back)
 
+/**
+ * 📖 Composite `provider::model` keys pruned this session. flushCache() re-reads
+ * 📖 the disk file before writing, and the read-merge-write pass would otherwise
+ * 📖 resurrect exactly the entries pruneStaleEntries() just deleted (the disk file
+ * 📖 still contains them until our write lands).
+ */
+const _sessionPrunedKeys = new Set()
+
 // ─── Path resolution ──────────────────────────────────────────────────────────
 
 /**
@@ -180,16 +188,24 @@ export function loadCache({ path: cachePath } = {}) {
  * 📖 from incoming do NOT delete fields from base. Used by flushCache to merge
  * 📖 our in-memory mirror with whatever the on-disk file now contains (covers
  * 📖 the daemon + CLI running concurrently case).
+ *
+ * 📖 `excludeKeys` (optional Set of `provider::model`) drops matching base
+ * 📖 entries: keys pruned this session must stay pruned instead of coming back
+ * 📖 from the stale disk snapshot.
  */
-function mergeCache(base, incoming) {
+function mergeCache(base, incoming, excludeKeys = null) {
   if (!base || typeof base !== 'object') return incoming
   if (!incoming || typeof incoming !== 'object') return base
   const out = { ...incoming, providers: { ...(incoming.providers || {}) } }
   for (const [providerKey, providerBucket] of Object.entries(base.providers || {})) {
     const incomingBucket = out.providers[providerKey] || { models: {} }
-    out.providers[providerKey] = {
-      models: { ...(providerBucket?.models || {}), ...(incomingBucket.models || {}) },
+    const mergedModels = { ...(providerBucket?.models || {}), ...(incomingBucket.models || {}) }
+    if (excludeKeys && excludeKeys.size > 0) {
+      for (const modelId of Object.keys(mergedModels)) {
+        if (excludeKeys.has(`${providerKey}::${modelId}`)) delete mergedModels[modelId]
+      }
     }
+    out.providers[providerKey] = { models: mergedModels }
   }
   return out
 }
@@ -220,12 +236,15 @@ export function flushCache({ path: cachePath, cache } = {}) {
     onDisk = null
   }
 
-  const merged = onDisk ? mergeCache(onDisk, localData) : localData
+  const merged = onDisk ? mergeCache(onDisk, localData, _sessionPrunedKeys) : localData
 
   try {
     atomicWriteJson(target, merged, 0o600)
     _cacheLoadedFrom = target
     _cache = merged
+    // 📖 Deletions are now persisted: clear the set so entries re-added later by
+    // 📖 another process (e.g. the model returned to the catalog) still merge in.
+    _sessionPrunedKeys.clear()
     return true
   } catch {
     return false
@@ -244,6 +263,8 @@ export function clearCache({ path: cachePath } = {}) {
   const target = cachePath ?? getProbeCachePath()
   _cache = null
   _cacheLoadedFrom = null
+  // 📖 The file is gone, so tracked deletions have nothing left to override.
+  _sessionPrunedKeys.clear()
   try {
     fs.unlinkSync(target)
     return true
@@ -406,6 +427,11 @@ export function recordProbeResults(providerKey, results, opts = {}) {
         probeVersion: CURRENT_PROBE_VERSION,
         consecutiveFailures,
       }
+      // 📖 A live re-probe of a pruned model means it is catalogued again: stop
+      // 📖 excluding it from disk merges.
+      if (!opts || !Object.prototype.hasOwnProperty.call(opts, 'cache')) {
+        _sessionPrunedKeys.delete(`${providerKey}::${r.modelId}`)
+      }
       written++
     } catch {
       dropped++
@@ -553,6 +579,11 @@ export function pruneStaleEntries(providerKey, liveModelIds, opts = {}) {
   for (const id of Object.keys(bucket)) {
     if (!live.has(id)) {
       delete bucket[id]
+      // 📖 Remember the deletion so flushCache's read-merge-write does not
+      // 📖 resurrect this entry from the still-stale disk file.
+      if (!opts || !Object.prototype.hasOwnProperty.call(opts, 'cache')) {
+        _sessionPrunedKeys.add(`${providerKey}::${id}`)
+      }
       pruned++
     }
   }

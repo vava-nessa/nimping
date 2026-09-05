@@ -8,7 +8,8 @@
  *   tool launch actions. It also keeps the live key bindings aligned with the
  *   highlighted letters shown in the table headers.
  *
- *   📖 Key I opens the changelog overlay.
+ *   📖 Key I opens the Help overlay. The changelog lives in Settings
+ *   📖 ("View Changelog" row) and the command palette ("Changelog" entry).
  *
  *   It also owns the "test key" model selection used by the Settings overlay,
  *   delegated to the shared `provider-key-tester.js` module for consistency
@@ -20,7 +21,6 @@
  * @exports { buildProviderModelsUrl, parseProviderModelIds, listProviderTestModels, classifyProviderTestOutcome, buildProviderTestDetail, createKeyHandler }
  */
 
-import { loadChangelog } from '../core/changelog-loader.js'
 import { getToolMeta, isModelCompatibleWithTool, getCompatibleTools, findSimilarCompatibleModels } from '../core/tool-metadata.js'
 import { loadConfig, saveConfig, replaceConfigContents, getApiKey } from '../core/config.js'
 import { sources } from '../../sources.js'
@@ -31,7 +31,8 @@ import { cleanupLegacyProxyArtifacts } from '../core/legacy-proxy-cleanup.js'
 import { getLastLayout, COLUMN_SORT_MAP } from './render-table.js'
 import { cycleThemeSetting, detectActiveTheme } from './theme.js'
 import { syncShellEnv, ensureShellRcSource, removeShellEnv } from '../core/shell-env.js'
-import { buildCommandPaletteTree, flattenCommandTree, filterCommandPaletteEntries } from './command-palette.js'
+import { buildCommandPaletteTree, flattenCommandTree, filterCommandPaletteEntries, clampPaletteCursor } from './command-palette.js'
+import { runWithConcurrency, loadChangelogCached } from './render-helpers.js'
 import { WIDTH_WARNING_MIN_COLS, VERDICT_CYCLE, HEALTH_CYCLE } from '../core/constants.js'
 import { scanAllToolConfigs, softDeleteModel } from '../core/installed-models-manager.js'
 import { startExternalTool } from '../core/tool-launchers.js'
@@ -109,6 +110,32 @@ function spawnDaemonCommand(state, args) {
   })
 }
 
+// 📖 persistTableViewSettings: single source of truth for persisting table-view
+// 📖 preferences (sort column/direction, tier/origin filter). Keyboard and mouse
+// 📖 handlers both call this so a mouse sort persists exactly like a keyboard
+// 📖 sort: via settings.sortAsc + saveConfig. The old mouse-only copy wrote a
+// 📖 settings.sortDirection field nothing reads and never called saveConfig, so
+// 📖 mouse sort changes were silently lost on restart. ORIGIN_CYCLE is optional:
+// 📖 the mouse handler never changes the origin filter (and doesn't receive the
+// 📖 cycle), so it just leaves that field untouched.
+function persistTableViewSettings(state, { TIER_CYCLE = null, ORIGIN_CYCLE = null, saveConfig }) {
+  if (!state.config) return
+  if (!state.config.settings || typeof state.config.settings !== 'object') state.config.settings = {}
+  if (TIER_CYCLE) state.config.settings.tierFilter = TIER_CYCLE[state.tierFilterMode]
+  if (ORIGIN_CYCLE) state.config.settings.originFilter = ORIGIN_CYCLE[state.originFilterMode] ?? null
+  state.config.settings.sortColumn = state.sortColumn
+  state.config.settings.sortAsc = state.sortDirection === 'asc'
+  saveConfig(state.config)
+}
+
+// 📖 Safe "scroll to end" sentinel for overlay End keys. The overlay renderers
+// 📖 clamp the offset to the real content length on the next frame
+// 📖 (clampOverlayOffset via sliceOverlayLines), so the value only needs to be
+// 📖 far past any plausible content. This replaces the old
+// 📖 Number.MAX_SAFE_INTEGER assignments that leaked into downstream scroll
+// 📖 arithmetic (pageStep +/- offsets) before the next render clamped them.
+const OVERLAY_SCROLL_END_SENTINEL = 100_000
+
 export function createKeyHandler(ctx) {
     const {
     state,
@@ -165,9 +192,7 @@ export function createKeyHandler(ctx) {
     noteUserActivity,
     intervalToPingMode,
     PING_MODE_CYCLE,
-    themeRowIdx,
     setResults,
-    readline,
   } = ctx
 
   let userSelected = null
@@ -176,6 +201,27 @@ export function createKeyHandler(ctx) {
   // 📖 so stale reset timers from a previous run can detect they no longer own
   // 📖 the probe counters and skip their reset instead of clobbering live values.
   let probeRunSeq = 0
+
+  // 📖 Tracked error-message timers (P2 fix): the setTimeout handles that clear
+  // 📖 installedModelsErrorMsg / settingsErrorMsg used to be anonymous, so
+  // 📖 closing + reopening an overlay within 3s let an OLD timer wipe a FRESH
+  // 📖 error. Handles now live on state and are cleared whenever the overlay
+  // 📖 opens/closes or a new error is scheduled.
+  function clearErrorMsgTimer(field) {
+    const timerKey = `${field}ClearTimer`
+    if (state[timerKey]) {
+      clearTimeout(state[timerKey])
+      state[timerKey] = null
+    }
+  }
+
+  function scheduleErrorMsgClear(field, ms) {
+    clearErrorMsgTimer(field)
+    state[`${field}ClearTimer`] = setTimeout(() => {
+      state[field] = null
+      state[`${field}ClearTimer`] = null
+    }, ms)
+  }
 
   function resetToolInstallPrompt() {
     state.toolInstallPromptOpen = false
@@ -680,13 +726,9 @@ export function createKeyHandler(ctx) {
   }
 
   // 📖 Persist current table-view preferences so sort/filter state survives restarts.
+  // 📖 Delegates to the module-level helper shared with the mouse handler.
   function persistUiSettings() {
-    if (!state.config.settings || typeof state.config.settings !== 'object') state.config.settings = {}
-    state.config.settings.tierFilter = TIER_CYCLE[state.tierFilterMode]
-    state.config.settings.originFilter = ORIGIN_CYCLE[state.originFilterMode] ?? null
-    state.config.settings.sortColumn = state.sortColumn
-    state.config.settings.sortAsc = state.sortDirection === 'asc'
-    saveConfig(state.config)
+    persistTableViewSettings(state, { TIER_CYCLE, ORIGIN_CYCLE, saveConfig })
   }
 
   // 📖 Shared table refresh helper so command-palette and hotkeys keep identical behavior.
@@ -731,6 +773,8 @@ export function createKeyHandler(ctx) {
     state.settingsAddKeyMode = false
     state.settingsEditBuffer = ''
     state.settingsScrollOffset = 0
+    // 📖 Fresh overlay: drop any stale auto-clear timer from a previous visit.
+    clearErrorMsgTimer('settingsErrorMsg')
 
     // 📖 Auto-test all configured API keys in parallel on Settings open.
     // 📖 Each provider with a saved key fires a parallel auth probe batch immediately.
@@ -785,6 +829,8 @@ export function createKeyHandler(ctx) {
     state.installedModelsOpen = true
     state.installedModelsCursor = 0
     state.installedModelsScrollOffset = 0
+    // 📖 Clear any stale auto-clear timer so it cannot wipe the fresh status.
+    clearErrorMsgTimer('installedModelsErrorMsg')
     state.installedModelsErrorMsg = 'Scanning...'
 
     try {
@@ -955,23 +1001,9 @@ export function createKeyHandler(ctx) {
     }
   }
 
-  // 📖 runWithConcurrency: Execute tasks with limited parallelism (maxConcurrent simultaneous).
-  function runWithConcurrency(tasks, maxConcurrent) {
-    const results = new Array(tasks.length)
-    let nextIndex = 0
-    const workers = new Array(maxConcurrent).fill(null).map(async () => {
-      while (true) {
-        const index = nextIndex++
-        if (index >= tasks.length) break
-        try {
-          results[index] = await tasks[index]()
-        } catch (err) {
-          results[index] = { error: err }
-        }
-      }
-    })
-    return Promise.all(workers).then(() => results)
-  }
+  // 📖 runWithConcurrency now lives in render-helpers.js (shared with app.js's
+  // 📖 startup ping burst, which used to fire unbounded Promise.all). Imported
+  // 📖 at the top of this file.
 
   // 📖 setActionNotice: Surface a non-fatal error/info message as a footer chip.
   // 📖 Part of the issue #168 "kicked out" fix: palette commands and the 404 probe
@@ -1260,6 +1292,8 @@ export function createKeyHandler(ctx) {
       || state.routerDashboardOpen
       || state.playgroundOpen
       || state.recommendOpen
+      || state.tokenUsageOpen
+      || state.runtimeReportOpen
 
       || state.helpVisible
       || state.changelogOpen
@@ -1325,9 +1359,9 @@ export function createKeyHandler(ctx) {
       })
     }
 
-    if (state.commandPaletteCursor >= state.commandPaletteResults.length) {
-      state.commandPaletteCursor = Math.max(0, state.commandPaletteResults.length - 1)
-    }
+    // 📖 Clamp against the RENDERED slice (COMMAND_PALETTE_MAX_RESULTS rows),
+    // 📖 not the full list - otherwise the cursor could sit on an invisible row.
+    state.commandPaletteCursor = clampPaletteCursor(state.commandPaletteCursor, state.commandPaletteResults.length)
   }
 
   function openCommandPalette() {
@@ -1530,8 +1564,6 @@ export function createKeyHandler(ctx) {
 
     // 📖 Command palette captures the keyboard while active.
     if (state.commandPaletteOpen) {
-      if (key.ctrl && key.name === 'c') { exit(0); return }
-
       const pageStep = Math.max(1, (state.terminalRows || 1) - 10)
       const selected = state.commandPaletteResults[state.commandPaletteCursor]
 
@@ -1630,7 +1662,6 @@ export function createKeyHandler(ctx) {
     // 📖 Router Dashboard: ↑↓ navigate favorites list, Ctrl+↑↓ reorder,
     // 📖 I cycles health check speed, C clears log, Esc goes back.
     if (state.routerDashboardOpen) {
-      if (key.ctrl && key.name === 'c') { exit(0); return }
       const favorites = Array.isArray(state.config?.favorites) ? state.config.favorites : []
       // 📖 maxCursor accounts for the favorites list + 2 buttons (Start/Stop Daemon and Install Endpoint)
       const maxCursor = Math.max(0, favorites.length + 1)
@@ -1753,8 +1784,6 @@ export function createKeyHandler(ctx) {
 
     // 📖 Install Endpoints overlay: provider → tool → connection → scope → optional model subset.
     if (state.installEndpointsOpen) {
-      if (key.ctrl && key.name === 'c') { exit(0); return }
-
       const providerChoices = getConfiguredInstallableProviders(state.config)
       const toolChoices = getInstallTargetModes().filter(t => !(state.installEndpointsProviderKey === 'fcm_router' && t === 'fcm_router'))
       const modelChoices = state.installEndpointsProviderKey
@@ -1961,8 +1990,6 @@ export function createKeyHandler(ctx) {
     }
 
     if (state.toolInstallPromptOpen) {
-      if (key.ctrl && key.name === 'c') { exit(0); return }
-
       const installPlan = state.toolInstallPromptPlan || getToolInstallPlan(state.toolInstallPromptMode)
       const installSupported = Boolean(installPlan?.supported)
 
@@ -2000,8 +2027,6 @@ export function createKeyHandler(ctx) {
 
     // ─── Installed Models overlay keyboard handling ───────────────────────────
     if (state.installedModelsOpen) {
-      if (key.ctrl && key.name === 'c') { exit(0); return }
-
       const scanResults = state.installedModelsData || []
       let maxIndex = 0
       for (const toolResult of scanResults) {
@@ -2040,6 +2065,7 @@ export function createKeyHandler(ctx) {
       if (key.name === 'escape') {
         state.installedModelsOpen = false
         state.installedModelsCursor = 0
+        clearErrorMsgTimer('installedModelsErrorMsg')
         return
       }
 
@@ -2079,12 +2105,12 @@ export function createKeyHandler(ctx) {
                     openInstalledModelsOverlay()
                   } else {
                     state.installedModelsErrorMsg = `Failed to disable: ${result.error}`
-                    setTimeout(() => { state.installedModelsErrorMsg = null }, 3000)
+                    scheduleErrorMsgClear('installedModelsErrorMsg', 3000)
                   }
                 })
                 .catch((err) => {
                   state.installedModelsErrorMsg = `Failed to disable: ${err.message}`
-                  setTimeout(() => { state.installedModelsErrorMsg = null }, 3000)
+                  scheduleErrorMsgClear('installedModelsErrorMsg', 3000)
                 })
               return
             }
@@ -2099,8 +2125,6 @@ export function createKeyHandler(ctx) {
     // 📖 Incompatible fallback overlay: ↑↓ navigate across tool + model sections, Enter confirms, Esc cancels.
     // 📖 Cursor is a flat index: 0..N-1 = compatible tools, N..N+M-1 = similar models.
     if (state.incompatibleFallbackOpen) {
-      if (key.ctrl && key.name === 'c') { exit(0); return }
-
       const tools = state.incompatibleFallbackTools || []
       const similarModels = state.incompatibleFallbackSimilarModels || []
       const totalItems = tools.length + similarModels.length
@@ -2189,14 +2213,12 @@ export function createKeyHandler(ctx) {
       if (key.name === 'pageup') { state.helpScrollOffset = Math.max(0, state.helpScrollOffset - pageStep); return }
       if (key.name === 'pagedown') { state.helpScrollOffset += pageStep; return }
       if (key.name === 'home') { state.helpScrollOffset = 0; return }
-      if (key.name === 'end') { state.helpScrollOffset = Number.MAX_SAFE_INTEGER; return }
-      if (key.ctrl && key.name === 'c') { exit(0); return }
+      if (key.name === 'end') { state.helpScrollOffset = OVERLAY_SCROLL_END_SENTINEL; return }
       return
     }
 
     // 📖 Token Usage overlay: Shift+T shows token history chart and today/all-time breakdowns.
     if (state.tokenUsageOpen) {
-      if (key.ctrl && key.name === 'c') { exit(0); return }
       const pageStep = Math.max(1, (state.terminalRows || 1) - 4)
       if (key.name === 'escape') {
         closeTokenUsageOverlay()
@@ -2223,7 +2245,7 @@ export function createKeyHandler(ctx) {
         return
       }
       if (key.name === 'end') {
-        state.tokenUsageScrollOffset = Number.MAX_SAFE_INTEGER
+        state.tokenUsageScrollOffset = OVERLAY_SCROLL_END_SENTINEL
         return
       }
       return
@@ -2232,7 +2254,6 @@ export function createKeyHandler(ctx) {
     // 📖 Runtime Report overlay (t3): Shift+W. Per-model real-world breakdown +
     // 📖 recent calls. Scrolling with up/down/pageup/pagedown/escape.
     if (state.runtimeReportOpen) {
-      if (key.ctrl && key.name === 'c') { exit(0); return }
       const pageStep = Math.max(1, (state.terminalRows || 1) - 4)
       if (key.name === 'escape') {
         closeRuntimeReportOverlay()
@@ -2259,114 +2280,22 @@ export function createKeyHandler(ctx) {
         return
       }
       if (key.name === 'end') {
-        state.runtimeReportScrollOffset = Number.MAX_SAFE_INTEGER
+        state.runtimeReportScrollOffset = OVERLAY_SCROLL_END_SENTINEL
         return
       }
       return
     }
 
-    // 📖 Router Onboarding overlay: shown on first launch. Y=yes enable, N=not now, Esc=cancel.
-    if (state.routerOnboardingOpen) {
-      if (key.ctrl && key.name === 'c') { exit(0); return }
-      if (state.routerOnboardingPhase === 'loading' || state.routerOnboardingPhase === 'success' || state.routerOnboardingPhase === 'error') {
-        if (key.name === 'escape' || key.name === 'return') {
-          state.routerOnboardingOpen = false
-          // 📖 Mark onboarding as seen (don't show again)
-          if (state.config?.router) {
-            state.config.router.onboardingSeen = true
-          }
-          return
-        }
-        return
-      }
-      if (key.name === 'escape' || key.name === 'n') {
-        state.routerOnboardingOpen = false
-        // 📖 Mark as seen and disabled
-        if (state.config?.router) {
-          state.config.router.onboardingSeen = true
-          state.config.router.enabled = false
-        }
-        return
-      }
-      if (key.name === 'up' || key.name === 'k') {
-        state.routerOnboardingCursor = 0
-        return
-      }
-      if (key.name === 'down' || key.name === 'j') {
-        state.routerOnboardingCursor = 1
-        return
-      }
-      if (key.name === 'return' || key.name === 'y') {
-        const shouldEnable = key.name === 'return' ? true : (state.routerOnboardingCursor === 0)
-        if (!shouldEnable) {
-          state.routerOnboardingOpen = false
-          if (state.config?.router) {
-            state.config.router.onboardingSeen = true
-            state.config.router.enabled = false
-          }
-          return
-        }
-        // 📖 Enable router: start daemon in background and mark onboarding seen
-        state.routerOnboardingPhase = 'loading'
-        state.routerOnboardingError = null
-        void (async () => {
-          try {
-            const binPath = join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'free-coding-models.js')
-            const child = spawn('node', [binPath, '--daemon-bg'], {
-              detached: true,
-              stdio: ['ignore', 'pipe', 'pipe'],
-              env: { ...process.env, ...(isPackageDevMode() && !process.env.FCM_DEV ? { FCM_DEV: '1' } : {}) },
-            })
-            child.unref()
-
-            // 📖 Capture daemon startup output so we can show the real error reason
-            let onboardingStdout = ''
-            let onboardingStderr = ''
-            child.stdout?.on('data', (chunk) => { onboardingStdout += chunk })
-            child.stderr?.on('data', (chunk) => { onboardingStderr += chunk })
-            child.on('close', (code) => {
-              if (code === 0) return
-              let detail = null
-              try {
-                const parsed = JSON.parse(onboardingStdout.trim())
-                if (parsed?.error) detail = parsed.error
-              } catch {}
-              if (!detail && onboardingStderr.trim()) {
-                const lines = onboardingStderr.trim().split('\n').filter(l => !l.startsWith('node:'))
-                detail = lines.slice(0, 2).join(' — ') || onboardingStderr.trim().slice(0, 120)
-              }
-              if (state.routerOnboardingPhase === 'loading') {
-                state.routerOnboardingPhase = 'error'
-                state.routerOnboardingError = detail || `Daemon exited with code ${code}`
-              }
-            })
-            await new Promise((r) => setTimeout(r, 2000))
-            if (state.routerOnboardingPhase === 'loading') {
-              state.routerOnboardingPhase = 'success'
-              if (state.config?.router) {
-                state.config.router.enabled = true
-                state.config.router.onboardingSeen = true
-                saveConfig(state.config)
-              }
-              trackTelemetryEvent('app_router_install', { router_version: '0.4.0' })
-              await new Promise((r) => setTimeout(r, 1500))
-              state.routerOnboardingOpen = false
-              openRouterDashboardOverlay(state)
-            }
-          } catch (err) {
-            state.routerOnboardingPhase = 'error'
-            state.routerOnboardingError = err?.message || 'Failed to start router'
-          }
-        })()
-        return
-      }
-      return
-    }
+    // 📖 Router Onboarding overlay removed (dead code): nothing ever set
+    // 📖 state.routerOnboardingOpen = true (the TUI now auto-enables the router
+    // 📖 silently at startup, see app.js), so this block and its renderer were
+    // 📖 unreachable. The config.router.onboardingSeen writers below are gone
+    // 📖 with it; app.js still flips the flags on boot.
 
     // 📖 Changelog overlay: two-phase (index + details) with keyboard navigation
     if (state.changelogOpen) {
       const pageStep = Math.max(1, (state.terminalRows || 1) - 2)
-      const changelogData = loadChangelog()
+      const changelogData = loadChangelogCached()
       const { versions } = changelogData
       const versionList = Object.keys(versions).sort((a, b) => {
         const aParts = a.split('.').map(Number)
@@ -2476,14 +2405,11 @@ export function createKeyHandler(ctx) {
         if (key.name === 'end') { state.changelogScrollOffset = maxScrollOffset; return }
       }
 
-      if (key.ctrl && key.name === 'c') { exit(0); return }
       return
     }
 
     // 📖 Smart Recommend overlay: full keyboard handling while overlay is open.
     if (state.recommendOpen) {
-      if (key.ctrl && key.name === 'c') { exit(0); return }
-
       if (state.recommendPhase === 'questionnaire') {
         const questions = [
           { options: Object.keys(TASK_TYPES), answerKey: 'taskType' },
@@ -2615,7 +2541,7 @@ export function createKeyHandler(ctx) {
               state.settingsAddKeyMode = false
               state.settingsEditBuffer = ''
               state.settingsErrorMsg = '⚠️  OpenRouter keys must start with "sk-or-". Key not saved.'
-              setTimeout(() => { state.settingsErrorMsg = null }, 3000)
+              scheduleErrorMsgClear('settingsErrorMsg', 3000)
               return
             }
             if (!state.config.apiKeys || typeof state.config.apiKeys !== 'object' || Array.isArray(state.config.apiKeys)) {
@@ -2634,7 +2560,7 @@ export function createKeyHandler(ctx) {
             const saveResult = persistApiKeysForProvider(state.config, pk)
             if (!saveResult.success) {
               state.settingsErrorMsg = `⚠️  Failed to persist ${pk} API key: ${saveResult.error || 'Unknown error'}`
-              setTimeout(() => { state.settingsErrorMsg = null }, 4000)
+              scheduleErrorMsgClear('settingsErrorMsg', 4000)
             } else {
               trackAppAction('api_key_saved', {
                 provider_key: pk,
@@ -2667,6 +2593,7 @@ export function createKeyHandler(ctx) {
         state.settingsAddKeyMode = false
         state.settingsEditBuffer = ''
         state.settingsSyncStatus = null  // 📖 Clear sync status on close
+        clearErrorMsgTimer('settingsErrorMsg')  // 📖 Pending auto-clear must not fire into a closed overlay
         // 📖 Rebuild results: add models from newly enabled providers, remove disabled
         const nextResults = MODELS
           .filter(([,,,,,pk]) => isProviderEnabled(state.config, pk))
@@ -2868,8 +2795,6 @@ export function createKeyHandler(ctx) {
 
         // 📖 Profile system removed - API keys now persist permanently across all sessions
 
-      if (key.ctrl && key.name === 'c') { exit(0); return }
-
       // 📖 + key: open add-key input (empty buffer) — appends new key on Enter
       if ((str === '+' || key.name === '+') && state.settingsCursor < providerKeys.length) {
         state.settingsEditBuffer = ''      // 📖 Start with empty buffer (not existing key)
@@ -3014,7 +2939,7 @@ export function createKeyHandler(ctx) {
       return
     }
 
-    // 📖 Sorting keys: R=rank, O=origin, M=model, L=latest ping, A=avg ping, S=SWE-bench, C=context, H=health, V=verdict, B=stability, U=uptime, G=usage
+    // 📖 Sorting keys: R=rank, O=origin, M=model, L=latest ping, A=avg ping, S=SWE-bench, C=context, H=health, V=verdict, B=stability, U=uptime (G cycles theme, not a sort key)
     // 📖 T is reserved for tier filter cycling. Y toggles favorites display mode.
     // 📖 X clears the active custom text filter.
     // 📖 D is now reserved for provider filter cycling
@@ -3278,6 +3203,17 @@ export function createMouseEventHandler(ctx) {
     cycleToolMode,
   } = ctx
 
+  // 📖 Shared helper: recompute the visible+sorted list from current filters/sort.
+  // 📖 Hoisted (P3 dedup): this exact block was copy-pasted in
+  // 📖 setSortColumnFromClick, toggleFavoriteAtRow and the Tier header click.
+  function refreshVisibleSorted() {
+    const visible = state.results.filter(r => !r.hidden)
+    state.visibleSorted = sortResultsWithPinnedFavorites(visible, state.sortColumn, state.sortDirection, {
+      pinFavorites: state.favoritesPinnedAndSticky,
+      benchmarkResults: state.benchmarkResults,
+    })
+  }
+
   // 📖 Shared helper: set the sort column, toggling direction if same column clicked twice.
   function setSortColumnFromClick(col) {
     if (state.sortColumn === col) {
@@ -3290,20 +3226,15 @@ export function createMouseEventHandler(ctx) {
     state.headerFlashColumn = col
     state.headerFlashUntilFrame = state.frame + 3
     // 📖 Recompute visible sorted list to reflect new sort order
-    const visible = state.results.filter(r => !r.hidden)
-    state.visibleSorted = sortResultsWithPinnedFavorites(visible, state.sortColumn, state.sortDirection, {
-      pinFavorites: state.favoritesPinnedAndSticky,
-      benchmarkResults: state.benchmarkResults,
-    })
+    refreshVisibleSorted()
   }
 
-  // 📖 Shared helper: persist UI settings after mouse-triggered changes
+  // 📖 Shared helper: persist UI settings after mouse-triggered changes.
+  // 📖 Delegates to the module-level helper shared with the keyboard path so a
+  // 📖 mouse sort persists via sortAsc + saveConfig (the old copy wrote a
+  // 📖 sortDirection field nothing reads and never saved).
   function persistUiSettings() {
-    if (!state.config) return
-    if (!state.config.settings || typeof state.config.settings !== 'object') state.config.settings = {}
-    state.config.settings.sortColumn = state.sortColumn
-    state.config.settings.sortDirection = state.sortDirection
-    state.config.settings.tierFilter = TIER_CYCLE[state.tierFilterMode] || null
+    persistTableViewSettings(state, { TIER_CYCLE, saveConfig })
   }
 
   // 📖 Shared helper: toggle favorite on a specific model row index.
@@ -3315,11 +3246,7 @@ export function createMouseEventHandler(ctx) {
     toggleFavoriteModel(state.config, selected.providerKey, selected.modelId)
     syncFavoriteFlags(state.results, state.config)
     applyTierFilter()
-    const visible = state.results.filter(r => !r.hidden)
-    state.visibleSorted = sortResultsWithPinnedFavorites(visible, state.sortColumn, state.sortDirection, {
-      pinFavorites: state.favoritesPinnedAndSticky,
-      benchmarkResults: state.benchmarkResults,
-    })
+    refreshVisibleSorted()
     // 📖 If we unfavorited while pinned mode is on, reset cursor to top
     if (wasFavorite && state.favoritesPinnedAndSticky) {
       state.cursor = 0
@@ -3633,11 +3560,7 @@ export function createMouseEventHandler(ctx) {
           state.headerFlashUntilFrame = state.frame + 3
           state.tierFilterMode = (state.tierFilterMode + 1) % TIER_CYCLE.length
           applyTierFilter()
-          const visible = state.results.filter(r => !r.hidden)
-          state.visibleSorted = sortResultsWithPinnedFavorites(visible, state.sortColumn, state.sortDirection, {
-            pinFavorites: state.favoritesPinnedAndSticky,
-            benchmarkResults: state.benchmarkResults,
-          })
+          refreshVisibleSorted()
           state.cursor = 0
           state.scrollOffset = 0
           persistUiSettings()
@@ -3649,7 +3572,20 @@ export function createMouseEventHandler(ctx) {
     // 📖 Check if click is on a model row → move cursor (or select on double-click)
     // 📖 Right-click toggles favorite on that row (same as F key)
     if (y >= layout.firstModelRow && y <= layout.lastModelRow) {
-      const rowOffset = y - layout.firstModelRow
+      // 📖 Space-expanded detail card (fix 15): the 2 extra lines under the
+      // 📖 expanded row shift every row below it down, so a raw y - firstModelRow
+      // 📖 offset pointed 2 models too far. Shift offsets below the card back up;
+      // 📖 a click ON the card lines selects the expanded row itself.
+      let rowOffset = y - layout.firstModelRow
+      const expandedDetailRows = layout.expandedDetailRows || 0
+      if (expandedDetailRows > 0) {
+        const expandedRel = (layout.expandedDetailAfterIdx ?? -1) - layout.viewportStartIdx
+        if (rowOffset > expandedRel && rowOffset <= expandedRel + expandedDetailRows) {
+          rowOffset = expandedRel
+        } else if (rowOffset > expandedRel) {
+          rowOffset -= expandedDetailRows
+        }
+      }
       const modelIdx = layout.viewportStartIdx + rowOffset
       if (modelIdx >= layout.viewportStartIdx && modelIdx < layout.viewportEndIdx) {
         state.cursor = modelIdx
@@ -3678,9 +3614,17 @@ export function createMouseEventHandler(ctx) {
           return
         }
         // 📖 Map the footer zone key to a synthetic keypress.
-        // 📖 Most are single-character keys; special cases like ctrl+p need special handling.
+        // 📖 Most are single-character keys; ctrl-modified zones emit ctrl keys so
+        // 📖 they hit the real shortcut handlers (plain 'a'/'u' are SORT keys and
+        // 📖 the old zones silently re-sorted the table instead of benchmarking).
         if (zone.key === 'ctrl+p') {
           process.stdin.emit('keypress', '\x10', { name: 'p', ctrl: true, meta: false, shift: false })
+        } else if (zone.key === 'ctrl+a') {
+          // 📖 "AI Speed Test" badge → Ctrl+A (benchmark selected model)
+          process.stdin.emit('keypress', '\x01', { name: 'a', ctrl: true, meta: false, shift: false })
+        } else if (zone.key === 'ctrl+u') {
+          // 📖 "Global AI Speed Test" badge → Ctrl+U (benchmark all models)
+          process.stdin.emit('keypress', '\x15', { name: 'u', ctrl: true, meta: false, shift: false })
         } else if (zone.key === 'shift+r') {
           process.stdin.emit('keypress', 'R', { name: 'r', ctrl: false, meta: false, shift: true })
         } else {

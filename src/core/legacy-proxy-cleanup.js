@@ -332,8 +332,16 @@ function cleanupAider(filePath, summary) {
   if (!existsSync(filePath)) return
   try {
     const content = readFileSync(filePath, 'utf8')
-    const isLegacyProxyConfig = content.includes('FCM Proxy V2') || /openai-api-base:\s*http:\/\/127\.0\.0\.1:/i.test(content)
+    // 📖 Only treat the file as proxy-era when BOTH signals hold: the FCM proxy
+    // 📖 banner we used to write AND a loopback openai-api-base. Matching on the
+    // 📖 loopback base alone deleted unrelated local setups (e.g. ollama) wholesale.
+    const isLegacyProxyConfig = content.includes('FCM Proxy V2')
+      && /openai-api-base:\s*http:\/\/127\.0\.0\.1:/i.test(content)
     if (isLegacyProxyConfig) {
+      // 📖 Back up before any unlink: the file may contain user edits we cannot
+      // 📖 reconstruct.
+      const backupPath = `${filePath}.backup-${Date.now()}`
+      try { writeFileSync(backupPath, content, { mode: 0o600 }) } catch { /* best-effort */ }
       unlinkSync(filePath)
       noteRemovedFile(summary, filePath)
     }
@@ -345,7 +353,12 @@ function cleanupAider(filePath, summary) {
 function cleanupAmp(filePath, summary) {
   updateJsonFile(filePath, (config) => {
     let removedEntries = 0
-    const usesLegacyLocalhost = typeof config['amp.url'] === 'string' && /127\.0\.0\.1|localhost/.test(config['amp.url'])
+    // 📖 The old proxy wrote its identity into the URL. Only loopback URLs that
+    // 📖 are actually FCM proxy artifacts (banner value in the URL) are removed;
+    // 📖 a user's own localhost amp.url (ollama, llama.cpp, ...) stays untouched.
+    const usesLegacyLocalhost = typeof config['amp.url'] === 'string'
+      && /127\.0\.0\.1|localhost/.test(config['amp.url'])
+      && /fcm|free-coding-models/i.test(config['amp.url'])
     if (usesLegacyLocalhost) {
       delete config['amp.url']
       removedEntries += 1

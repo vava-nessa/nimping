@@ -79,6 +79,13 @@ const STATE_DIRNAME = 'free-coding-models'
 let _cache = null
 let _cacheLoadedFrom = null
 
+/**
+ * 📖 Model keys (`provider::model`) pruned this session. The flush read-merge-write
+ * 📖 re-reads the disk file, so without this set the merge would resurrect exactly
+ * 📖 the entries pruneStaleEntries() just deleted.
+ */
+const _sessionPrunedKeys = new Set()
+
 // ─── Path resolution ──────────────────────────────────────────────────────────
 
 /**
@@ -189,7 +196,8 @@ export function flushRuntimeTelemetry({ path: telemetryPath, cache } = {}) {
     onDisk = null
   }
 
-  // 📖 Merge: per-model, our deltas win on key collision.
+  // 📖 Merge: per-model, our deltas win on key collision. Keys pruned this
+  // 📖 session stay deleted instead of coming back from the stale disk snapshot.
   const merged = onDisk && typeof onDisk === 'object' ? onDisk : { version: 1, models: {}, lastUpdated: 0 }
   if (!merged.models || typeof merged.models !== 'object') merged.models = {}
   for (const [key, entry] of Object.entries(localData.models)) {
@@ -206,12 +214,20 @@ export function flushRuntimeTelemetry({ path: telemetryPath, cache } = {}) {
       merged.models[key] = entry
     }
   }
+  if (_sessionPrunedKeys.size > 0) {
+    for (const key of Object.keys(merged.models)) {
+      if (_sessionPrunedKeys.has(key)) delete merged.models[key]
+    }
+  }
   merged.lastUpdated = Date.now()
 
   try {
     atomicWriteJson(target, merged, 0o600)
     _cacheLoadedFrom = target
     _cache = merged
+    // 📖 Deletions are persisted now; stop excluding so future external writes
+    // 📖 for the same keys still merge in.
+    _sessionPrunedKeys.clear()
     return true
   } catch {
     return false
@@ -229,6 +245,8 @@ export function clearRuntimeTelemetry({ path: telemetryPath } = {}) {
   const target = telemetryPath ?? getRuntimeTelemetryPath()
   _cache = null
   _cacheLoadedFrom = null
+  // 📖 The file is gone, so tracked deletions have nothing left to override.
+  _sessionPrunedKeys.clear()
   try {
     fs.unlinkSync(target)
     return true
@@ -342,6 +360,9 @@ export function recordModelCall(providerKey, modelId, callResult, opts = {}) {
 
   if (!opts || !Object.prototype.hasOwnProperty.call(opts, 'cache')) {
     _cache = cache
+    // 📖 A live re-record of a pruned model means it is routing again: stop
+    // 📖 excluding it from disk merges.
+    _sessionPrunedKeys.delete(key)
   }
 
   return { written: true }
@@ -531,6 +552,11 @@ export function pruneStaleEntries(maxAgeMs, opts = {}) {
     if (!entry) continue
     if (!entry.lastUpdated || now - entry.lastUpdated > maxAgeMs) {
       delete cache.models[key]
+      // 📖 Remember the deletion so flushRuntimeTelemetry's read-merge-write does
+      // 📖 not resurrect this entry from the still-stale disk file.
+      if (!opts || !Object.prototype.hasOwnProperty.call(opts, 'cache')) {
+        _sessionPrunedKeys.add(key)
+      }
       pruned++
     }
   }

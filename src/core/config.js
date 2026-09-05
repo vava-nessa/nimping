@@ -249,6 +249,9 @@ function isPlainObject(value) {
 }
 
 function cloneConfigValue(value) {
+  // 📖 Sets (hiddenModels) have no JSON representation and would come back as {}
+  // 📖 after the round-trip, breaking every `instanceof Set` consumer in the TUI.
+  if (value instanceof Set) return new Set(value)
   return JSON.parse(JSON.stringify(value))
 }
 
@@ -370,7 +373,9 @@ function normalizeRouterName(value, fallback = '') {
 }
 
 function normalizePositiveInteger(value, fallback, { min = 1, max = Number.MAX_SAFE_INTEGER } = {}) {
-  if (value === null || value === undefined || value === '') return fallback
+  // 📖 Booleans coerce through Number() (true -> 1) and would turn a malformed
+  // 📖 "router.port: true" into port 1, so non-numeric types fall back instead.
+  if (typeof value === 'boolean' || value === null || value === undefined || value === '') return fallback
   const numeric = Number(value)
   if (!Number.isFinite(numeric)) return fallback
   return Math.max(min, Math.min(max, Math.round(numeric)))
@@ -610,6 +615,19 @@ function mergeEndpointInstalls(diskEndpointInstalls, incomingEndpointInstalls) {
   return [...merged.values()]
 }
 
+// 📖 mergeHiddenModels: union of the disk auto-hide set with the live one, so a
+// 📖 stale writer (daemon autosave, second TUI) cannot wipe probe-hidden models.
+// 📖 When the incoming config explicitly disables auto-hide, the incoming set wins
+// 📖 so the TUI's "unhide all" toggle actually stays cleared instead of being
+// 📖 resurrected from disk on every save.
+function mergeHiddenModels(diskSet, incomingSet, incomingAutoHideDisabled) {
+  if (incomingAutoHideDisabled) return incomingSet
+  const merged = new Set()
+  for (const entry of diskSet) merged.add(entry)
+  for (const entry of incomingSet) merged.add(entry)
+  return merged
+}
+
 
 
 /**
@@ -629,7 +647,18 @@ export function buildPersistedConfig(incomingConfig, diskConfig = _emptyConfig()
       ? cloneConfigValue(normalizedIncoming.apiKeys)
       : { ...normalizedDisk.apiKeys, ...normalizedIncoming.apiKeys },
     providers: { ...normalizedDisk.providers, ...normalizedIncoming.providers },
-    settings: cloneConfigValue(normalizedIncoming.settings),
+    // 📖 Shallow-merge settings per top-level key: replacing wholesale let
+    // 📖 concurrent surfaces (TUI, web dashboard, daemon autosave) clobber each
+    // 📖 other's unrelated settings. Incoming wins per key.
+    settings: { ...normalizedDisk.settings, ...normalizedIncoming.settings },
+    // 📖 hiddenModels used to be dropped here entirely, so every saveConfig wiped
+    // 📖 the auto-hide list both on disk and in the live config object. Merge it
+    // 📖 so the Set serializer in saveConfig can persist it again.
+    hiddenModels: mergeHiddenModels(
+      normalizedDisk.hiddenModels,
+      normalizedIncoming.hiddenModels,
+      normalizedIncoming.settings.autoHideBrokenModels === false,
+    ),
     favorites: options.replaceFavorites === true
       ? [...normalizedIncoming.favorites]
       : mergeOrderedUniqueStrings(normalizedIncoming.favorites, normalizedDisk.favorites),
@@ -960,8 +989,10 @@ function createBackup() {
       mkdirSync(backupDir, { mode: 0o700, recursive: true })
     }
 
-    // 📖 Create timestamped backup
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '').slice(0, -5) + 'Z'
+    // 📖 Create timestamped backup. Full timestamp including seconds: the old
+    // 📖 slice(0, -5) truncated them, so two saves <10s apart overwrote the same
+    // 📖 backup file and lost the older snapshot.
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '') + 'Z'
     const backupPath = join(backupDir, `config.${timestamp}.json`)
     const backupContent = readFileSync(CONFIG_PATH, 'utf8')
     writeFileSync(backupPath, backupContent, { mode: 0o600 })
@@ -1107,8 +1138,15 @@ export function getApiKey(config, providerKey) {
     if (candidate && process.env[candidate]) return process.env[candidate]
   }
 
-  // 📖 Config file value
+  // 📖 Config file value. addApiKey() stores a provider's extra keys as an array,
+  // 📖 but every consumer (ping Authorization header, tool env vars, daemon) needs
+  // 📖 a single string: an array would stringify to "key1,key2" and get a
+  // 📖 guaranteed 401. Return the first non-empty entry instead.
   const key = config?.apiKeys?.[providerKey]
+  if (Array.isArray(key)) {
+    const firstUsable = key.find(k => typeof k === 'string' && k.length > 0)
+    return firstUsable ?? null
+  }
   if (key) return key
 
   return null

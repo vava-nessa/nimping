@@ -131,8 +131,10 @@ export function detectDrift(models, catalog, opts = {}) {
   for (const entry of models) {
     // 📖 Accept both tuple form and object form
     let modelId, label, ctx, reasoning, vision, thinking, maxTokens
+    let isTupleForm = false
     if (Array.isArray(entry)) {
       [modelId, label, , , ctx] = entry
+      isTupleForm = true
       // 📖 The 6th+ elements of the sources.js tuple are providerKey + metadata;
       // 📖 for drift we only need the first 5.
     } else if (entry && typeof entry === 'object') {
@@ -162,6 +164,13 @@ export function detectDrift(models, catalog, opts = {}) {
         matchKind,
       })
     }
+
+    // 📖 Tuple-form entries carry no capability flags or maxTokens (arity 5), so
+    // 📖 flagMatch(undefined, true) used to report a bogus "add" for every capable
+    // 📖 model and bury the real ctx drift under noise. Only object-form entries
+    // 📖 (which can actually hold these fields) are compared.
+    if (isTupleForm) continue
+
     // maxTokens
     const maxCmp = numMatch(maxTokens, norm.maxOutputTokens)
     if (maxCmp.status === 'drift' || maxCmp.status === 'add') {

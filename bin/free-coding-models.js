@@ -225,7 +225,10 @@ async function main() {
 
   // Validate --tier early, before entering alternate screen
   if (cliArgs.tierFilter && !TIER_LETTER_MAP[cliArgs.tierFilter]) {
-    console.error(chalk.red(`  Unknown tier "${cliArgs.tierFilter}". Valid tiers: S, A, B, C`));
+    // 📖 Strip control characters before echoing raw argv back to the terminal,
+    // 📖 otherwise an argv sequence like \r could forge fake terminal output.
+    const safeTierEcho = String(cliArgs.tierFilter).replace(/[\x00-\x1f\x7f]/g, '')
+    console.error(chalk.red(`  Unknown tier "${safeTierEcho}". Valid tiers: S, A, B, C`));
     process.exit(1);
   }
 

@@ -93,7 +93,7 @@ import chalk from 'chalk'
 import { createRequire } from 'module'
 import { randomUUID } from 'crypto'
 import { MODELS, sources } from '../../sources.js'
-import { getAvg, getVerdict, getUptime, getP95, getJitter, getStabilityScore, sortResults, filterByTier, findBestModel, parseArgs, TIER_ORDER, VERDICT_ORDER, TIER_LETTER_MAP, scoreModelForTask, getTopRecommendations, TASK_TYPES, PRIORITY_TYPES, CONTEXT_BUDGETS, formatCtxWindow, labelFromId, formatResultsAsJSON } from '../core/utils.js'
+import { getAvg, getVerdict, getUptime, getP95, getJitter, getStabilityScore, sortResults, filterByTier, parseArgs, TIER_ORDER, VERDICT_ORDER, TIER_LETTER_MAP, scoreModelForTask, getTopRecommendations, TASK_TYPES, PRIORITY_TYPES, CONTEXT_BUDGETS, formatResultsAsJSON } from '../core/utils.js'
 import { loadConfig, saveConfig, getApiKey, resolveApiKeys, addApiKey, removeApiKey, isProviderEnabled, persistApiKeysForProvider } from '../core/config.js'
 import { buildMergedModels } from '../core/model-merger.js'
 import { loadOpenCodeConfig, saveOpenCodeConfig } from '../core/opencode-config.js'
@@ -101,7 +101,7 @@ import { usageForRow as _usageForRow } from '../core/usage-reader.js'
 import { buildProviderModelTokenKey, loadTokenUsageByProviderModel } from '../core/token-usage-reader.js'
 import { parseOpenRouterResponse, fetchProviderQuota as _fetchProviderQuotaFromModule, getAllQuotas as _getAllPassiveQuotasFromModule } from '../core/provider-quota-fetchers.js'
 import { isKnownQuotaTelemetry } from '../core/quota-capabilities.js'
-import { ALT_ENTER, ALT_LEAVE, ALT_HOME, PING_TIMEOUT, PING_INTERVAL, FPS, COL_MODEL, COL_MS, CELL_W, FRAMES, TIER_CYCLE, VERDICT_CYCLE, HEALTH_CYCLE, SETTINGS_OVERLAY_BG, HELP_OVERLAY_BG, RECOMMEND_OVERLAY_BG, OVERLAY_PANEL_WIDTH, TABLE_HEADER_LINES, TABLE_FOOTER_LINES, TABLE_FIXED_LINES, WIDTH_WARNING_MIN_COLS, msCell, spinCell } from '../core/constants.js'
+import { ALT_ENTER, ALT_LEAVE, ALT_HOME, PING_TIMEOUT, PING_INTERVAL, FPS, FRAMES, TIER_CYCLE, VERDICT_CYCLE, HEALTH_CYCLE, SETTINGS_OVERLAY_BG, HELP_OVERLAY_BG, RECOMMEND_OVERLAY_BG, OVERLAY_PANEL_WIDTH, TABLE_HEADER_LINES, TABLE_FOOTER_LINES, TABLE_FIXED_LINES, WIDTH_WARNING_MIN_COLS } from '../core/constants.js'
 import { TIER_COLOR } from './tier-colors.js'
 import { resolveCloudflareUrl, buildPingRequest, ping, extractQuotaPercent, getProviderQuotaPercentCached, usagePlaceholderForProvider } from '../core/ping.js'
 import { runFiableMode, filterByTierOrExit, fetchOpenRouterFreeModels } from '../core/analysis.js'
@@ -109,12 +109,12 @@ import { PROVIDER_METADATA, ENV_VAR_NAMES, isWindows, isMac } from '../core/prov
 import { parseTelemetryEnv, isTelemetryDebugEnabled, telemetryDebug, ensureTelemetryConfig, getTelemetryDistinctId, getTelemetrySystem, getTelemetryTerminal, isTelemetryEnabled, sendUsageTelemetry } from '../core/telemetry.js'
 import { ensureFavoritesConfig, toFavoriteKey, syncFavoriteFlags, toggleFavoriteModel, reorderFavorite, pruneOrphanedFavorites } from '../core/favorites.js'
 import { checkForUpdateDetailed, checkForUpdate, runUpdate, fetchLastReleaseDate } from '../core/updater.js'
-import { createTuiState, PING_MODE_INTERVALS, PING_MODE_CYCLE, SPEED_MODE_DURATION_MS, IDLE_SLOW_AFTER_MS, intervalToPingMode } from './tui-state.js'
+import { createTuiState, PING_MODE_INTERVALS, PING_MODE_CYCLE, SPEED_MODE_DURATION_MS, IDLE_SLOW_AFTER_MS, PING_HISTORY_CAP, intervalToPingMode } from './tui-state.js'
 import { createPingLoop } from '../core/ping-loop.js'
 import { createTuiFilters } from './tui-filters.js'
 import { promptApiKey } from '../core/setup.js'
 import { syncShellEnv, ensureShellRcSource, removeShellEnv } from '../core/shell-env.js'
-import { stripAnsi, maskApiKey, displayWidth, padEndDisplay, tintOverlayLines, keepOverlayTargetVisible, sliceOverlayLines, calculateViewport, sortResultsWithPinnedFavorites, adjustScrollOffset } from './render-helpers.js'
+import { displayWidth, padEndDisplay, tintOverlayLines, keepOverlayTargetVisible, sliceOverlayLines, sortResultsWithPinnedFavorites, adjustScrollOffset, runWithConcurrency } from './render-helpers.js'
 import { renderTable, PROVIDER_COLOR } from './render-table.js'
 import { setOpenCodeModelData, startOpenCode, startOpenCodeDesktop, startOpenCodeWeb } from '../core/opencode.js'
 import { startKilo } from '../core/kilo.js'
@@ -478,6 +478,12 @@ export async function runApp(cliArgs, config, startupOptions = {}) {
   let ticker = null
   let onKeyPress = null
   let onMouseData = null  // 📖 Mouse data listener — set after createMouseEventHandler
+  // 📖 The variables above hold raw handler functions, but what actually gets
+  // 📖 registered on process.stdin are the WRAPPERS below. stopUi used to remove
+  // 📖 the raw functions (a silent no-op) - it now removes these tracked
+  // 📖 wrappers so launch/update paths really detach the listeners.
+  let keypressWrapper = null
+  let mouseDataWrapper = null
   let pingModel = null
 
   // 📖 scheduleNextPing: wrapper that defers to the factory version, passing the current runPingCycle.
@@ -505,7 +511,9 @@ export async function runApp(cliArgs, config, startupOptions = {}) {
         r.verdict = cachedModel.verdict
         r.status = cachedModel.status
         r.httpCode = cachedModel.httpCode
-        r.pings = cachedModel.pings || []
+        // 📖 Trim restored history to PING_HISTORY_CAP so an oversized cache
+        // 📖 file cannot instantly reintroduce the unbounded-growth problem.
+        r.pings = (cachedModel.pings || []).slice(-PING_HISTORY_CAP)
       }
     }
   }
@@ -621,6 +629,13 @@ export async function runApp(cliArgs, config, startupOptions = {}) {
       }
 
       r.pings.push({ ms, code })
+      // 📖 Cap ping history (PING_HISTORY_CAP = 300): r.pings used to grow
+      // 📖 unbounded and getAvg/getP95/getVerdict/getStabilityScore rescan it
+      // 📖 per row at ~12 FPS. Stats (uptime, avg) now roll over the last
+      // 📖 300 pings instead of the entire session; the oldest entries shift out.
+      if (r.pings.length > PING_HISTORY_CAP) {
+        r.pings.splice(0, r.pings.length - PING_HISTORY_CAP)
+      }
 
       // 📖 Probe-cache (t1): record the result so future runs can skip healthy models
       // 📖 and auto-hide broken ones. Uses the module-level in-memory cache; flushed
@@ -767,8 +782,9 @@ export async function runApp(cliArgs, config, startupOptions = {}) {
     clearTimeout(state.pingIntervalObj)
     clearInterval(state.versionRecheckTimer)
     stopRouterDashboardClient(state)
-    if (onKeyPress) process.stdin.removeListener('keypress', onKeyPress)
-    if (onMouseData) process.stdin.removeListener('data', onMouseData)
+    // 📖 Remove the actual registered wrappers (see keypressWrapper/mouseDataWrapper).
+    if (keypressWrapper) process.stdin.removeListener('keypress', keypressWrapper)
+    if (mouseDataWrapper) process.stdin.removeListener('data', mouseDataWrapper)
     if (process.stdin.isTTY && resetRawMode) process.stdin.setRawMode(false)
     process.stdin.pause()
     process.stdout.write(ALT_LEAVE)
@@ -837,6 +853,7 @@ export async function runApp(cliArgs, config, startupOptions = {}) {
     sortResultsWithPinnedFavorites,
     adjustScrollOffset,
     applyTierFilter,
+    getPingModel: () => pingModel,
     PING_INTERVAL,
     TIER_CYCLE,
     ORIGIN_CYCLE,
@@ -948,7 +965,7 @@ export async function runApp(cliArgs, config, startupOptions = {}) {
     }
   })
 
-  process.stdin.on('keypress', async (str, key) => {
+  keypressWrapper = async (str, key) => {
     try {
       // 📖 Skip keypress events that originate from mouse escape sequences.
       // 📖 readline may partially parse SGR mouse sequences as garbage keypresses.
@@ -963,18 +980,20 @@ export async function runApp(cliArgs, config, startupOptions = {}) {
       console.error(chalk.yellow('\nPlease file an issue at https://github.com/vava-nessa/free-coding-models/issues or join the Discord to report this to the author.'));
       process.exit(1);
     }
-  })
+  }
+  process.stdin.on('keypress', keypressWrapper)
 
   // 📖 Mouse data listener: parses SGR mouse escape sequences from raw stdin
   // 📖 and dispatches structured events (click, scroll, double-click) to the mouse handler.
-  process.stdin.on('data', (data) => {
+  mouseDataWrapper = (data) => {
     try {
       if (onMouseData) onMouseData(data)
     } catch (err) {
       // 📖 Mouse errors are non-fatal — log and continue so the TUI doesn't crash.
       // 📖 This could happen on terminals that send unexpected mouse sequences.
     }
-  })
+  }
+  process.stdin.on('data', mouseDataWrapper)
 
   process.on('SIGCONT', noteUserActivity)
 
@@ -1103,8 +1122,6 @@ export async function runApp(cliArgs, config, startupOptions = {}) {
         ? overlays.renderPlayground()
       : state.tokenUsageOpen
         ? overlays.renderTokenUsage()
-      : state.routerOnboardingOpen
-        ? overlays.renderRouterOnboarding()
       : state.incompatibleFallbackOpen
         ? overlays.renderIncompatibleFallback()
       : state.commandPaletteOpen
@@ -1207,7 +1224,14 @@ export async function runApp(cliArgs, config, startupOptions = {}) {
   const initialDueModels = state.results.filter(r => !isCacheFresh(r.providerKey, r.modelId, {
     ttlMs: state.probeCacheTtlMs,
   }))
-  const initialPing = Promise.all(initialDueModels.map(r => pingModel(r)))
+  // 📖 Startup burst runs through runWithConcurrency(…, 5) - the same bounded
+  // 📖 helper the 404 probe uses. The old Promise.all fired up to ~226
+  // 📖 simultaneous pings at once, a guaranteed 429 storm on rate-limited
+  // 📖 providers (and per-task errors are captured instead of rejecting the batch).
+  const initialPing = runWithConcurrency(
+    initialDueModels.map(r => () => pingModel(r)),
+    5
+  )
 
   // 📖 Continuous ping loop with mode-driven cadence.
   const runPingCycle = async () => {

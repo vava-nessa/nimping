@@ -77,7 +77,7 @@ export async function startKilo(model, fcmConfig) {
   console.log(chalk.dim(`  Model: ${modelRef}`))
   console.log()
 
-  const config = loadKiloConfig()
+  const config = loadKiloConfig() || {}
 
   if (!config.provider) config.provider = {}
   if (!config.provider[providerKey]) {

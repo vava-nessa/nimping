@@ -70,9 +70,11 @@ function parseCtxToTokens(ctx) {
   if (!match) return null
   const num = parseFloat(match[1])
   const suffix = match[2].toLowerCase()
-  // 📖 LLM token counts use binary (1024), not decimal (1000).
-  if (suffix === 'k') return Math.round(num * 1024)
-  if (suffix === 'm') return Math.round(num * 1024 * 1024)
+  // 📖 Catalog ctx strings use DECIMAL semantics ("1M" = 1,000,000), matching
+  // 📖 parseContextWindow in endpoint-installer.js. The old 1024 multipliers made
+  // 📖 the two parsers disagree (1048576 vs 1000000) for the same catalog value.
+  if (suffix === 'k') return Math.round(num * 1000)
+  if (suffix === 'm') return Math.round(num * 1000 * 1000)
   return Math.round(num)
 }
 

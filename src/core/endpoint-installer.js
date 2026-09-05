@@ -47,7 +47,7 @@ import { MODELS, sources } from '../../sources.js'
 import { getApiKey, saveConfig } from './config.js'
 import { ENV_VAR_NAMES, PROVIDER_METADATA } from './provider-metadata.js'
 import { getToolMeta } from './tool-metadata.js'
-import { ensureDir, readJson as sharedReadJson, shellSingleQuote } from './shared-helpers.js'
+import { ensureDir, readJson as sharedReadJson, shellSingleQuote, atomicWriteJson } from './shared-helpers.js'
 
 // 📖 replicate uses /v1/predictions (not /chat/completions), so it's not OpenAI-compatible.
 // 📖 zai and opencode-zen ARE OpenAI-compatible and CAN be installed into any tool.
@@ -101,7 +101,10 @@ function writeSecretFile(filePath, content) {
 function writeJson(filePath, value, { backup = true } = {}) {
   ensureDirFor(filePath)
   const backupPath = backup ? backupIfExists(filePath) : null
-  writeSecretFile(filePath, JSON.stringify(value, null, 2) + '\n')
+  // 📖 Atomic tmp + rename via the shared helper instead of an in-place
+  // 📖 writeFileSync, so a crash mid-write can never truncate a tool config.
+  // 📖 0600 because these configs carry plaintext API keys.
+  atomicWriteJson(filePath, value, 0o600)
   return backupPath
 }
 
@@ -512,11 +515,12 @@ function installIntoQwen(providerKey, models, apiKey, paths) {
 
 // 📖 installIntoEnvBasedTool handles tools that rely on env vars only.
 // 📖 We write a small .env-style helper file so users can source it before launching.
-function installIntoEnvBasedTool(providerKey, models, apiKey, toolMode) {
+// 📖 `paths` is optional and lets tests override the env file location.
+function installIntoEnvBasedTool(providerKey, models, apiKey, toolMode, paths = {}) {
   const providerId = getManagedProviderId(providerKey)
   const home = homedir()
   const envFileName = `.fcm-${toolMode}-env`
-  const envFilePath = join(home, envFileName)
+  const envFilePath = paths?.envFilePath ?? join(home, envFileName)
   const primaryModel = models[0]
   const effectiveApiKey = apiKey
   const effectiveBaseUrl = resolveProviderBaseUrl(providerKey)

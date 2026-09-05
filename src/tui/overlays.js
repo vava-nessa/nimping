@@ -19,14 +19,14 @@
  * @see ./key-handler.js — handles keypresses for all overlay interactions
  */
 
-import { loadChangelog } from '../core/changelog-loader.js'
 import { buildCliHelpLines } from './cli-help.js'
 import { renderRouterDashboard as renderRouterDashboardOverlay } from '../core/router-dashboard.js'
 import { renderPlayground as renderPlaygroundOverlay } from '../core/playground.js'
 import { themeColors, getThemeStatusLabel, getProviderRgb } from './theme.js'
 import { getProviderBillingNote, getProviderLabelWithBilling } from '../core/provider-metadata.js'
 import { detectTerminalCapabilities } from '../core/utils.js'
-import { truncateAnsiWidth } from './render-helpers.js'
+import { truncateAnsiWidth, loadChangelogCached } from './render-helpers.js'
+import { COMMAND_PALETTE_MAX_RESULTS } from './command-palette.js'
 
 export function createOverlayRenderers(state, deps) {
   const {
@@ -516,14 +516,17 @@ export function createOverlayRenderers(state, deps) {
     }
 
     const targetLine = cursorLineByRow[state.installEndpointsCursor] ?? 0
-    state.toolInstallPromptScrollOffset = keepOverlayTargetVisible(
-      state.toolInstallPromptScrollOffset,
+    // 📖 Own its scroll offset (fix): this renderer used to read/write
+    // 📖 toolInstallPromptScrollOffset, sharing (and fighting over) state with
+    // 📖 the tool-install prompt overlay. Each overlay now scrolls independently.
+    state.installEndpointsScrollOffset = keepOverlayTargetVisible(
+      state.installEndpointsScrollOffset,
       targetLine,
       lines.length,
       state.terminalRows
     )
-    const { visible, offset } = sliceOverlayLines(lines, state.toolInstallPromptScrollOffset, state.terminalRows)
-    state.toolInstallPromptScrollOffset = offset
+    const { visible, offset } = sliceOverlayLines(lines, state.installEndpointsScrollOffset, state.terminalRows)
+    state.installEndpointsScrollOffset = offset
 
     const tintedLines = tintOverlayLines(visible, themeColors.overlayBgSettings, state.terminalCols)
     const cleared = tintedLines.map((line) => line + EL)
@@ -710,14 +713,15 @@ export function createOverlayRenderers(state, deps) {
     }
 
     const targetLine = cursorLineByRow[state.toolInstallPromptCursor] ?? 0
-    state.installEndpointsScrollOffset = keepOverlayTargetVisible(
-      state.installEndpointsScrollOffset,
+    // 📖 Own its scroll offset (fix): was reading/writing installEndpointsScrollOffset.
+    state.toolInstallPromptScrollOffset = keepOverlayTargetVisible(
+      state.toolInstallPromptScrollOffset,
       targetLine,
       lines.length,
       state.terminalRows
     )
-    const { visible, offset } = sliceOverlayLines(lines, state.installEndpointsScrollOffset, state.terminalRows)
-    state.installEndpointsScrollOffset = offset
+    const { visible, offset } = sliceOverlayLines(lines, state.toolInstallPromptScrollOffset, state.terminalRows)
+    state.toolInstallPromptScrollOffset = offset
 
     const tintedLines = tintOverlayLines(visible, themeColors.overlayBgSettings, state.terminalCols)
     const cleared = tintedLines.map((line) => line + EL)
@@ -773,7 +777,7 @@ export function createOverlayRenderers(state, deps) {
       return out
     }
 
-    const allResults = Array.isArray(state.commandPaletteResults) ? state.commandPaletteResults.slice(0, 80) : []
+    const allResults = Array.isArray(state.commandPaletteResults) ? state.commandPaletteResults.slice(0, COMMAND_PALETTE_MAX_RESULTS) : []
     const panelLines = []
     const cursorLineByRow = {}
 
@@ -1266,7 +1270,9 @@ export function createOverlayRenderers(state, deps) {
   function renderChangelog() {
     const EL = '\x1b[K'
     const lines = []
-    const changelogData = loadChangelog()
+    // 📖 TTL-cached load (fix): this ran readdirSync + readFileSync of every
+    // 📖 changelog/*.md on EVERY render frame while the overlay was open.
+    const changelogData = loadChangelogCached()
     const { versions } = changelogData
     const versionList = Object.keys(versions).sort((a, b) => {
       const aParts = a.split('.').map(Number)
@@ -1628,64 +1634,9 @@ export function createOverlayRenderers(state, deps) {
     return tintedLines.map((l) => l + EL).join('\n')
   }
 
-  // ─── Router Onboarding overlay renderer ─────────────────────────────────────
-  // 📖 renderRouterOnboarding: shown on first launch (no config.router) or
-  // 📖 first launch after upgrade (existing config but router.onboardingSeen !== true).
-  // 📖 Two options: Enable (Y) or Not now (N). Phase 6 — Smart Model Router.
-  function renderRouterOnboarding() {
-    const EL = '\x1b[K'
-    const lines = []
-    const cursorLineByRow = {}
-
-    lines.push('')
-    lines.push(`  ${themeColors.accent('🚀')} ${themeColors.accentBold('free-coding-models')} ${themeColors.dim(`v${LOCAL_VERSION}`)}`)
-    lines.push(`  ${themeColors.textBold('🔀 Smart Router Available!')}`)
-    lines.push('')
-    lines.push(themeColors.dim('  FCM can run a background daemon that automatically'))
-    lines.push(themeColors.dim('  routes your requests to the fastest healthy model —'))
-    lines.push(themeColors.dim('  with zero manual intervention after initial setup.'))
-    lines.push('')
-
-    const options = [
-      { label: 'Yes, enable the router', hint: 'Recommended — creates default set and starts daemon', key: 'Y' },
-      { label: 'Not now', hint: 'You can enable it later from the TUI', key: 'N' },
-    ]
-
-    if (state.routerOnboardingPhase === 'loading') {
-      lines.push(themeColors.info('  Enabling router, please wait...'))
-    } else if (state.routerOnboardingPhase === 'success') {
-      lines.push(themeColors.success('  ✅ Router enabled! Dashboard opening...'))
-      lines.push(themeColors.dim('  Setup complete. Return to the main table to continue.'))
-    } else if (state.routerOnboardingPhase === 'error') {
-      lines.push(themeColors.error(`  ❌ ${state.routerOnboardingError || 'Failed to enable router'}`))
-      lines.push(themeColors.dim('  Press Esc or Enter to continue to the main table'))
-    } else {
-      for (let i = 0; i < options.length; i++) {
-        const opt = options[i]
-        const isCursor = i === state.routerOnboardingCursor
-        const keyLabel = themeColors.hotkey(`  ${opt.key}]`)
-        const row = `${bullet(isCursor)}${keyLabel} ${isCursor ? themeColors.textBold(opt.label) : themeColors.text(opt.label)}`
-        cursorLineByRow[i] = lines.length
-        lines.push(isCursor ? themeColors.bgCursorSettingsList(row) : row)
-        lines.push(themeColors.dim(`      ${opt.hint}`))
-        lines.push('')
-      }
-      lines.push(themeColors.dim('  ↑↓ Navigate  •  Enter Select  •  Esc Skip for now'))
-      lines.push('')
-      lines.push(
-        themeColors.dim('  💬 ') +
-        themeColors.footerDiscord('\x1b]8;;https://discord.gg/ZTNFHvvCkU\x1b\\Join the Discord community\x1b]8;;\x1b\\') +
-        themeColors.dim('  •  Get help, share feedback, follow updates')
-      )
-    }
-
-    const targetLine = cursorLineByRow[state.routerOnboardingCursor] ?? 0
-    state.routerOnboardingScrollOffset = keepOverlayTargetVisible(state.routerOnboardingScrollOffset, targetLine, lines.length, state.terminalRows)
-    const { visible, offset } = sliceOverlayLines(lines, state.routerOnboardingScrollOffset, state.terminalRows)
-    state.routerOnboardingScrollOffset = offset
-    const tintedLines = tintOverlayLines(visible, themeColors.overlayBgSettings, state.terminalCols)
-    return tintedLines.map((l) => l + EL).join('\n')
-  }
+  // 📖 renderRouterOnboarding removed (dead code): nothing ever set
+  // 📖 state.routerOnboardingOpen = true, so the overlay was unreachable.
+  // 📖 The TUI auto-enables the router silently at startup instead (app.js).
 
   return {
     renderSettings,
@@ -1700,7 +1651,6 @@ export function createOverlayRenderers(state, deps) {
     renderPlayground,
     renderIncompatibleFallback,
     renderTokenUsage,
-    renderRouterOnboarding,
     startRecommendAnalysis,
     stopRecommendAnalysis,
     overlayLayout,

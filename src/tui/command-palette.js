@@ -9,7 +9,7 @@
  *   → `fuzzyMatchCommand` — scores a query against one string and returns match positions
  *   → `filterCommandPaletteEntries` — returns sorted command matches for a query
  *
- * @exports { buildCommandPaletteTree, flattenCommandTree, fuzzyMatchCommand, filterCommandPaletteEntries }
+ * @exports { buildCommandPaletteTree, flattenCommandTree, fuzzyMatchCommand, filterCommandPaletteEntries, COMMAND_PALETTE_MAX_RESULTS, clampPaletteCursor }
  *
  * @see src/key-handler.js
  * @see src/overlays.js
@@ -17,6 +17,25 @@
 
 import { TOOL_METADATA, TOOL_MODE_ORDER } from '../core/tool-metadata.js'
 import { sources } from '../../sources.js'
+import { sanitizePingInterval } from './tui-state.js'
+
+// 📖 Max result rows the palette renders (overlays.js slices to this). The
+// 📖 cursor must never point past the rendered slice, so key-handler clamps
+// 📖 with clampPaletteCursor() against the same constant.
+export const COMMAND_PALETTE_MAX_RESULTS = 80
+
+/**
+ * 📖 clampPaletteCursor: Keep the palette cursor inside the RENDERED slice.
+ * 📖 The overlay only paints the first COMMAND_PALETTE_MAX_RESULTS rows, so a
+ * 📖 cursor clamped against the full result list could sit on an invisible row.
+ * @param {number} cursor
+ * @param {number} totalResults
+ * @returns {number}
+ */
+export function clampPaletteCursor(cursor, totalResults) {
+  const max = Math.max(0, Math.min(totalResults, COMMAND_PALETTE_MAX_RESULTS) - 1)
+  return Math.min(Math.max(0, cursor), max)
+}
 
 const PROVIDER_FILTER_COMMANDS = Object.entries(sources).map(([providerKey, source]) => {
   const label = source?.name || providerKey
@@ -229,7 +248,8 @@ export function buildCommandPaletteTree(visibleModels = [], config = null) {
 
   // 📖 Update Normal mode label if config is provided
   if (config) {
-    const normalInterval = config.settings?.pingInterval ?? 10000
+    // 📖 Guard against 0/negative/garbage pingInterval (same rule as tui-state).
+    const normalInterval = sanitizePingInterval(config.settings?.pingInterval, 10000)
     const normalSec = Math.round(normalInterval / 1000)
     const actionsNode = tree.find(n => n.id === 'actions')
     const pingNode = actionsNode?.children.find(n => n.id === 'action-ping-mode')

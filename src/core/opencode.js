@@ -14,7 +14,7 @@
  *   - Auto-pick tmux port for OpenCode sub-agents
  *
  *   → Functions:
- *   - `setOpenCodeModelData` — Keep shared merged model references available
+ *   - `setOpenCodeModelData` - No-op kept for call-site stability (dead refs removed)
  *   - `startOpenCode` — Launch OpenCode CLI with selected model
  *   - `startOpenCodeDesktop` — Set model and open Desktop app
  *
@@ -41,15 +41,10 @@ const OPENCODE_CONFIG = join(homedir(), '.config', 'opencode', 'opencode.json')
 const OPENCODE_PORT_RANGE_START = 4096
 const OPENCODE_PORT_RANGE_END = 5096
 
-// 📖 Keep merged model references available for future OpenCode-related features.
-let mergedModelsRef = []
-let mergedModelByLabelRef = new Map()
-
-// 📖 setOpenCodeModelData: Provide mergedModels + mergedModelByLabel to this module.
-export function setOpenCodeModelData(mergedModels, mergedModelByLabel) {
-  mergedModelsRef = Array.isArray(mergedModels) ? mergedModels : []
-  mergedModelByLabelRef = mergedModelByLabel instanceof Map ? mergedModelByLabel : new Map()
-}
+// 📖 setOpenCodeModelData: kept as a stable no-op export. The merged model refs it
+// 📖 used to store were written but never read anywhere (verified by grep), so the
+// 📖 dead module state was removed; src/tui/app.js still calls this on startup.
+export function setOpenCodeModelData() {}
 
 // 📖 isTcpPortAvailable: checks if a local TCP port is free for OpenCode.
 // 📖 Used to avoid tmux sub-agent port conflicts when multiple projects run in parallel.
@@ -147,7 +142,19 @@ async function createZaiProxy(apiKey) {
       res.writeHead(proxyRes.statusCode, proxyRes.headers)
       proxyRes.pipe(res)
     })
-    proxyReq.on('error', () => { res.writeHead(502); res.end() })
+    proxyReq.on('error', () => {
+      // 📖 Headers may already be flushed to the client mid-stream; writeHead after
+      // 📖 that throws ERR_HTTP_HEADERS_SENT and masks the real proxy error.
+      if (!res.headersSent) res.writeHead(502)
+      res.end()
+    })
+    // 📖 Hang guard: an upstream that never responds used to stall the client
+    // 📖 forever. Destroy the socket and answer 502 when headers are not sent yet.
+    proxyReq.setTimeout(15000, () => {
+      proxyReq.destroy(new Error('ZAI proxy upstream timeout'))
+      if (!res.headersSent) res.writeHead(502)
+      res.end()
+    })
     req.pipe(proxyReq)
   })
   await new Promise(r => server.listen(0, '127.0.0.1', r))
@@ -209,7 +216,7 @@ async function spawnOpenCode(args, providerKey, fcmConfig, existingZaiProxy = nu
       // 📖 ZAI cleanup: remove the ephemeral proxy provider from opencode.json
       if (providerKey === 'zai') {
         try {
-          const cfg = loadOpenCodeConfig()
+          const cfg = loadOpenCodeConfig() || {}
           if (cfg.provider?.zai) delete cfg.provider.zai
           if (typeof cfg.model === 'string' && cfg.model.startsWith('zai/')) delete cfg.model
           saveOpenCodeConfig(cfg)
@@ -238,7 +245,7 @@ export async function startOpenCode(model, fcmConfig) {
   const modelRef = `${providerKey}/${ocModelId}`
 
   if (providerKey === 'nvidia') {
-    const config = loadOpenCodeConfig()
+    const config = loadOpenCodeConfig() || {}
     const backupPath = `${getOpenCodeConfigPath()}.backup-${Date.now()}`
 
     if (existsSync(getOpenCodeConfigPath())) {
@@ -273,7 +280,7 @@ export async function startOpenCode(model, fcmConfig) {
 
     saveOpenCodeConfig(config)
 
-    const savedConfig = loadOpenCodeConfig()
+    const savedConfig = loadOpenCodeConfig() || {}
     console.log(chalk.dim(`  Config saved to: ${getOpenCodeConfigPath()}`))
     console.log(chalk.dim(`  Default model in config: ${savedConfig.model || 'NOT SET'}`))
     console.log()
@@ -314,7 +321,7 @@ export async function startOpenCode(model, fcmConfig) {
     console.log(chalk.dim(`  Model: ${modelRef}`))
     console.log()
 
-    const config = loadOpenCodeConfig()
+    const config = loadOpenCodeConfig() || {}
     const backupPath = `${getOpenCodeConfigPath()}.backup-${Date.now()}`
 
     if (existsSync(getOpenCodeConfigPath())) {
@@ -337,7 +344,7 @@ export async function startOpenCode(model, fcmConfig) {
 
     saveOpenCodeConfig(config)
 
-    const savedConfig = loadOpenCodeConfig()
+    const savedConfig = loadOpenCodeConfig() || {}
     console.log(chalk.dim(`  Config saved to: ${getOpenCodeConfigPath()}`))
     console.log(chalk.dim(`  Default model in config: ${savedConfig.model || 'NOT SET'}`))
     console.log()
@@ -363,7 +370,7 @@ export async function startOpenCode(model, fcmConfig) {
     console.log(chalk.dim(`  Model: ${zenModelRef}`))
     console.log()
 
-    const config = loadOpenCodeConfig()
+    const config = loadOpenCodeConfig() || {}
     const backupPath = `${getOpenCodeConfigPath()}.backup-${Date.now()}`
 
     if (existsSync(getOpenCodeConfigPath())) {
@@ -374,7 +381,7 @@ export async function startOpenCode(model, fcmConfig) {
     config.model = zenModelRef
     saveOpenCodeConfig(config)
 
-    const savedConfig = loadOpenCodeConfig()
+    const savedConfig = loadOpenCodeConfig() || {}
     console.log(chalk.dim(`  Config saved to: ${getOpenCodeConfigPath()}`))
     console.log(chalk.dim(`  Default model in config: ${savedConfig.model || 'NOT SET'}`))
     console.log()
@@ -394,7 +401,7 @@ export async function startOpenCode(model, fcmConfig) {
   console.log(chalk.dim(`  Model: ${modelRef}`))
   console.log()
 
-  const config = loadOpenCodeConfig()
+  const config = loadOpenCodeConfig() || {}
   const backupPath = `${getOpenCodeConfigPath()}.backup-${Date.now()}`
 
   if (existsSync(getOpenCodeConfigPath())) {
@@ -561,7 +568,7 @@ export async function startOpenCode(model, fcmConfig) {
   config.model = modelRef
   saveOpenCodeConfig(config)
 
-  const savedConfig = loadOpenCodeConfig()
+  const savedConfig = loadOpenCodeConfig() || {}
   console.log(chalk.dim(`  Config saved to: ${getOpenCodeConfigPath()}`))
   console.log(chalk.dim(`  Default model in config: ${savedConfig.model || 'NOT SET'}`))
   console.log()
@@ -589,7 +596,7 @@ export async function startOpenCodeWeb(model, fcmConfig) {
   console.log(chalk.dim(`  Model: ${modelRef}`))
   console.log()
 
-  const config = loadOpenCodeConfig()
+  const config = loadOpenCodeConfig() || {}
   const backupPath = `${getOpenCodeConfigPath()}.backup-${Date.now()}`
 
   if (existsSync(getOpenCodeConfigPath())) {
@@ -684,7 +691,7 @@ export async function startOpenCodeDesktop(model, fcmConfig) {
   }
 
   if (providerKey === 'nvidia') {
-    const config = loadOpenCodeConfig()
+    const config = loadOpenCodeConfig() || {}
     const backupPath = `${getOpenCodeConfigPath()}.backup-${Date.now()}`
 
     if (existsSync(getOpenCodeConfigPath())) {
@@ -719,7 +726,7 @@ export async function startOpenCodeDesktop(model, fcmConfig) {
 
     saveOpenCodeConfig(config)
 
-    const savedConfig = loadOpenCodeConfig()
+    const savedConfig = loadOpenCodeConfig() || {}
     console.log(chalk.dim(`  Config saved to: ${getOpenCodeConfigPath()}`))
     console.log(chalk.dim(`  Default model in config: ${savedConfig.model || 'NOT SET'}`))
     console.log()
@@ -760,7 +767,7 @@ export async function startOpenCodeDesktop(model, fcmConfig) {
     console.log(chalk.dim(`  Model: ${zenModelRef}`))
     console.log()
 
-    const config = loadOpenCodeConfig()
+    const config = loadOpenCodeConfig() || {}
     const backupPath = `${getOpenCodeConfigPath()}.backup-${Date.now()}`
 
     if (existsSync(getOpenCodeConfigPath())) {
@@ -771,7 +778,7 @@ export async function startOpenCodeDesktop(model, fcmConfig) {
     config.model = zenModelRef
     saveOpenCodeConfig(config)
 
-    const savedConfig = loadOpenCodeConfig()
+    const savedConfig = loadOpenCodeConfig() || {}
     console.log(chalk.dim(`  Config saved to: ${getOpenCodeConfigPath()}`))
     console.log(chalk.dim(`  Default model in config: ${savedConfig.model || 'NOT SET'}`))
     console.log()
@@ -793,7 +800,7 @@ export async function startOpenCodeDesktop(model, fcmConfig) {
   console.log(chalk.dim(`  Model: ${modelRef}`))
   console.log()
 
-  const config = loadOpenCodeConfig()
+  const config = loadOpenCodeConfig() || {}
   const backupPath = `${getOpenCodeConfigPath()}.backup-${Date.now()}`
 
   if (existsSync(getOpenCodeConfigPath())) {
@@ -960,7 +967,7 @@ export async function startOpenCodeDesktop(model, fcmConfig) {
   config.model = modelRef
   saveOpenCodeConfig(config)
 
-  const savedConfig = loadOpenCodeConfig()
+  const savedConfig = loadOpenCodeConfig() || {}
   console.log(chalk.dim(`  Config saved to: ${getOpenCodeConfigPath()}`))
   console.log(chalk.dim(`  Default model in config: ${savedConfig.model || 'NOT SET'}`))
   console.log()

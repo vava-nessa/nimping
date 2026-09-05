@@ -39,6 +39,7 @@ import {
   TIER_ORDER, VERDICT_ORDER, TIER_LETTER_MAP,
   scoreModelForTask, getTopRecommendations, TASK_TYPES, PRIORITY_TYPES, CONTEXT_BUDGETS,
   formatCtxWindow, labelFromId, resolveSecurityAction,
+  formatResultsAsJSON,
   detectTerminalCapabilities,
   isProbeFailedRow, selectProbeFailedRows, PROBE_FAILED_STATUSES
 } from '../src/core/utils.js'
@@ -82,9 +83,11 @@ import {
 } from '../src/core/tool-launchers.js'
 import { getToolInstallPlan, isToolInstalled, resolveToolBinaryPath } from '../src/core/tool-bootstrap.js'
 import { TOOL_METADATA, TOOL_MODE_ORDER, getCompatibleTools, isModelCompatibleWithTool, findSimilarCompatibleModels } from '../src/core/tool-metadata.js'
-import { sortResultsWithPinnedFavorites, stripAnsi, fadedRow, displayWidth, padEndDisplay, keepOverlayTargetVisible, sliceOverlayLines, truncateAnsiWidth } from '../src/tui/render-helpers.js'
+import { sortResultsWithPinnedFavorites, stripAnsi, fadedRow, displayWidth, padEndDisplay, keepOverlayTargetVisible, sliceOverlayLines, truncateAnsiWidth, runWithConcurrency, loadChangelogCached } from '../src/tui/render-helpers.js'
 import { parseMouseEvents, containsMouseSequence, createMouseHandler, MOUSE_ENABLE, MOUSE_DISABLE } from '../src/tui/mouse.js'
 import { COLUMN_SORT_MAP } from '../src/tui/render-table.js'
+import { createTuiFilters } from '../src/tui/tui-filters.js'
+import { PING_HISTORY_CAP } from '../src/tui/tui-state.js'
 import { startOpenClaw } from '../src/core/openclaw.js'
 import { getConfiguredInstallableProviders, getInstallTargetModes, installProviderEndpoints } from '../src/core/endpoint-installer.js'
 import { cleanupLegacyProxyArtifacts } from '../src/core/legacy-proxy-cleanup.js'
@@ -112,6 +115,8 @@ import {
   buildCommandPaletteEntries,
   fuzzyMatchCommand,
   filterCommandPaletteEntries,
+  clampPaletteCursor,
+  COMMAND_PALETTE_MAX_RESULTS,
 } from '../src/tui/command-palette.js'
 import { startWebServer, inspectExistingWebServer } from '../web/server.js'
 import { buildTelemetryProperties, sendUsageTelemetry } from '../src/core/telemetry.js'
@@ -960,12 +965,21 @@ describe('getVerdict', () => {
     assert.equal(getVerdict(mockResult({ status: 'up', pings: [] })), 'Pending')
   })
 
-  it('uses 401-only latency samples for noauth verdicts', () => {
+  it('returns Not Active for 401-only pings (auth failure is never Perfect)', () => {
+    // 📖 Updated: this used to assert "Perfect" because 401 pings measure latency.
+    // 📖 A model that rejects every authenticated request must never be recommended
+    // 📖 by --fiable / findBestModel, so auth_error/noauth rows get the
+    // 📖 least-trustworthy verdict regardless of ping speed.
     assert.equal(getVerdict(mockResult({
       status: 'noauth',
       httpCode: '401',
       pings: [{ ms: 350, code: '401' }]
-    })), 'Perfect')
+    })), 'Not Active')
+    assert.equal(getVerdict(mockResult({
+      status: 'auth_error',
+      httpCode: '401',
+      pings: [{ ms: 120, code: '401' }]
+    })), 'Not Active')
   })
 })
 
@@ -7550,5 +7564,262 @@ describe('renderCommandPalette limited terminals (issue #169)', () => {
     }
     const fewCount = parsePositionedLines(createOverlayRenderers(state, paletteDeps()).renderCommandPalette()).length
     assert.equal(fewCount, fullCount, 'panel must keep rendering bodyRows lines even with fewer results')
+  })
+})
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 📖 TUI reliability fixes (quality pass): filter auto-hide preservation, ping
+// 📖 history cap, palette cursor clamp, width-aware label clip, BEL-aware ANSI
+// 📖 stripping, shared bounded-concurrency helper, cached changelog loader.
+// ══════════════════════════════════════════════════════════════════════════════
+
+describe('applyTierFilter preserves probe-cache / hiddenModels auto-hide', () => {
+  // 📖 Minimal row factory mirroring the shape app.js builds at startup.
+  const makeFilterRow = (overrides = {}) => ({
+    idx: 1, modelId: 'model-x', label: 'Model X', tier: 'S', sweScore: '80', ctx: '128k',
+    providerKey: 'prov', status: 'up', pings: [{ ms: 100, code: '200' }], httpCode: '200',
+    hasApiKey: true, isPinging: false, hidden: false,
+    ...overrides,
+  })
+
+  const buildFilter = ({ results, hiddenModels = new Set(), settings = {}, showBrokenMode = false }) => {
+    const filterState = {
+      results,
+      config: { settings, hiddenModels },
+      showBrokenMode,
+      favoritesPinnedAndSticky: false,
+      tierFilterMode: 0,
+      originFilterMode: 0,
+      verdictFilterMode: 0,
+      healthFilterMode: 0,
+      hideUnconfiguredModels: false,
+      bestModeOnly: false,
+      customTextFilter: null,
+    }
+    return createTuiFilters(filterState, {
+      sources: { prov: { name: 'Prov' } },
+      getApiKey: () => 'key',
+      PROVIDER_METADATA: {},
+    })
+  }
+
+  it('keeps config.hiddenModels rows hidden across repeated filter passes', () => {
+    // 📖 Regression: applyTierFilter ran every frame and reset r.hidden=false,
+    // 📖 clobbering the 404-probe auto-hide. The row must stay hidden.
+    const rows = [makeFilterRow({ modelId: 'model-a' }), makeFilterRow({ modelId: 'model-b' })]
+    const { applyTierFilter } = buildFilter({ results: rows, hiddenModels: new Set(['prov/model-a']) })
+    applyTierFilter()
+    applyTierFilter()
+    assert.equal(rows[0].hidden, true, 'hiddenModels row must stay hidden every frame')
+    assert.equal(rows[1].hidden, false)
+  })
+
+  it('keeps cachedBroken rows hidden unless showBrokenMode is on', () => {
+    const rows = [makeFilterRow({ modelId: 'model-broken', cachedBroken: true }), makeFilterRow({ modelId: 'model-ok' })]
+    const { applyTierFilter } = buildFilter({ results: rows })
+    applyTierFilter()
+    assert.equal(rows[0].hidden, true)
+    assert.equal(rows[1].hidden, false)
+  })
+
+  it('showBrokenMode=true reveals cachedBroken rows and keeps them visible', () => {
+    const rows = [makeFilterRow({ modelId: 'model-broken', cachedBroken: true })]
+    const { applyTierFilter } = buildFilter({ results: rows, showBrokenMode: true })
+    applyTierFilter()
+    assert.equal(rows[0].hidden, false, 'Shift+B visibility must survive applyTierFilter')
+  })
+
+  it('autoHideBrokenModels=false stops hiding both categories', () => {
+    const rows = [
+      makeFilterRow({ modelId: 'model-a' }),
+      makeFilterRow({ modelId: 'model-broken', cachedBroken: true }),
+    ]
+    const { applyTierFilter } = buildFilter({
+      results: rows,
+      hiddenModels: new Set(['prov/model-a']),
+      settings: { autoHideBrokenModels: false },
+    })
+    applyTierFilter()
+    assert.equal(rows[0].hidden, false)
+    assert.equal(rows[1].hidden, false)
+  })
+})
+
+describe('PING_HISTORY_CAP', () => {
+  it('is 300', () => {
+    assert.equal(PING_HISTORY_CAP, 300)
+  })
+
+  it('trim semantics keep exactly the newest CAP entries', () => {
+    // 📖 Mirrors the pingModel trim in app.js: splice from the front, keep the tail.
+    const pings = Array.from({ length: PING_HISTORY_CAP + 50 }, (_, i) => ({ ms: i, code: '200' }))
+    if (pings.length > PING_HISTORY_CAP) pings.splice(0, pings.length - PING_HISTORY_CAP)
+    assert.equal(pings.length, PING_HISTORY_CAP)
+    assert.equal(pings[0].ms, 50, 'oldest entries must shift out')
+  })
+})
+
+describe('clampPaletteCursor', () => {
+  it('clamps to the rendered slice, not the full result list', () => {
+    assert.equal(clampPaletteCursor(150, 200), COMMAND_PALETTE_MAX_RESULTS - 1)
+  })
+
+  it('keeps in-range cursors untouched', () => {
+    assert.equal(clampPaletteCursor(5, 200), 5)
+  })
+
+  it('clamps to the last real row for short lists', () => {
+    assert.equal(clampPaletteCursor(50, 30), 29)
+  })
+
+  it('never goes below 0 and handles empty lists', () => {
+    assert.equal(clampPaletteCursor(-3, 10), 0)
+    assert.equal(clampPaletteCursor(4, 0), 0)
+  })
+})
+
+describe('runWithConcurrency', () => {
+  it('runs all tasks and never exceeds the concurrency limit', async () => {
+    let running = 0
+    let peak = 0
+    const tasks = Array.from({ length: 12 }, (_, i) => async () => {
+      running++
+      peak = Math.max(peak, running)
+      await new Promise((resolve) => setTimeout(resolve, 5))
+      running--
+      return i
+    })
+    const results = await runWithConcurrency(tasks, 5)
+    assert.equal(results.length, 12)
+    assert.deepEqual([...results].sort((a, b) => a - b), [...Array(12).keys()])
+    assert.ok(peak <= 5, `peak concurrency ${peak} must be <= 5`)
+  })
+
+  it('captures per-task errors without rejecting the batch', async () => {
+    const tasks = [
+      async () => 1,
+      async () => { throw new Error('boom') },
+      async () => 3,
+    ]
+    const results = await runWithConcurrency(tasks, 2)
+    assert.equal(results[0], 1)
+    assert.ok(results[1] && results[1].error instanceof Error, 'failure must be captured as { error }')
+    assert.equal(results[2], 3)
+  })
+})
+
+describe('loadChangelogCached', () => {
+  it('returns parsed versions and reuses the cached object within the TTL', () => {
+    const first = loadChangelogCached()
+    assert.ok(first && typeof first.versions === 'object')
+    const second = loadChangelogCached()
+    assert.equal(second, first, 'same object must be reused within the TTL (no per-frame disk reads)')
+  })
+})
+
+describe('stripAnsi and truncateAnsiWidth handle BEL-terminated OSC', () => {
+  it('strips OSC sequences terminated by BEL and by ST', () => {
+    assert.equal(stripAnsi('\x1b]8;;http://x\x07link'), 'link')
+    assert.equal(stripAnsi('\x1b]8;;http://x\x1b\\link'), 'link')
+    assert.equal(stripAnsi('a\x1b]0;title\x07b'), 'ab')
+  })
+
+  it('truncateAnsiWidth no longer swallows text after a BEL-terminated OSC', () => {
+    // 📖 Old regex greedily ran past BEL to the next ESC, dropping visible text.
+    const out = truncateAnsiWidth('before\x1b]8;;http://x\x07after', 100)
+    assert.ok(stripAnsi(out).includes('after'))
+  })
+})
+
+describe('renderTable model label clip is surrogate-pair safe', () => {
+  it('never splits emoji into lone surrogates at the column boundary', () => {
+    // 📖 Old label.slice(0, nameWidth) cut by UTF-16 units: an odd width split
+    // 📖 every emoji at the boundary (mojibake). Width-aware clip must not.
+    const row = mockResult({
+      providerKey: 'nvidia',
+      label: '🦾'.repeat(20),   // 📖 40 UTF-16 units, wider than the 26-col Model column
+      pings: [{ ms: 120, code: '200' }],
+      totalTokens: 0,
+    })
+    const output = renderTable({
+      results: [row],
+      sortColumn: 'avg', sortDirection: 'asc',
+      pingInterval: 10_000, lastPingTime: Date.now(),
+      mode: 'opencode', terminalRows: 30, terminalCols: 200,
+    })
+    assert.ok(!output.includes('\uDDFA'), 'lone low surrogate means a split emoji')
+  })
+})
+
+// ─── Reliability pass: comparator NaN safety + pings guards ─────────────────
+
+describe('sortResults comparator safety', () => {
+  const argv = (...a) => ['node', 'fcm', ...a]
+
+  it('stays deterministic when both rows have no measurable pings (Infinity - Infinity)', () => {
+    const rows = [
+      mockResult({ idx: 1, label: 'First', pings: [{ ms: 0, code: '500' }] }),
+      mockResult({ idx: 2, label: 'Second', pings: [{ ms: 0, code: '500' }] }),
+    ]
+    const out = sortResults(rows, 'avg', 'asc')
+    assert.equal(out.length, 2)
+    // 📖 Infinity - Infinity is NaN; the comparator must collapse it to 0 so the
+    // 📖 sort keeps the original (stable) order instead of an arbitrary one.
+    assert.equal(out[0].label, 'First')
+    assert.equal(out[1].label, 'Second')
+  })
+
+  it('treats rows without realWorldScore as equal instead of NaN', () => {
+    const rows = [
+      mockResult({ idx: 1, label: 'X', realWorldScore: null }),
+      mockResult({ idx: 2, label: 'Y', realWorldScore: null }),
+    ]
+    const out = sortResults(rows, 'realworld', 'desc')
+    assert.equal(out.length, 2)
+    assert.equal(out[0].label, 'X')
+  })
+
+  it('getVerdict and getUptime do not crash on a missing pings array', () => {
+    assert.equal(getUptime({ status: 'up' }), 0)
+    assert.equal(getVerdict({ status: 'up' }), 'Pending')
+  })
+})
+
+describe('formatResultsAsJSON limit handling', () => {
+  it('ignores a negative limit instead of dropping rows', () => {
+    const rows = [mockResult(), mockResult(), mockResult()]
+    const parsed = JSON.parse(formatResultsAsJSON(rows, 'avg', -1))
+    assert.equal(parsed.length, 3)
+  })
+
+  it('still honours a positive limit', () => {
+    const rows = [mockResult(), mockResult(), mockResult()]
+    const parsed = JSON.parse(formatResultsAsJSON(rows, 'avg', 2))
+    assert.equal(parsed.length, 2)
+  })
+})
+
+describe('parseArgs value-flag forms', () => {
+  const argv = (...a) => ['node', 'fcm', ...a]
+
+  it('parses the --tier=S equals form', () => {
+    const result = parseArgs(argv('--tier=S'))
+    assert.equal(result.tierFilter, 'S')
+    assert.equal(result.apiKey, null)
+  })
+
+  it('does not leak a repeated flag value into the API key slot', () => {
+    // 📖 Only the first occurrence used to be marked consumed, so the second
+    // 📖 value ("A") leaked into apiKey.
+    const result = parseArgs(argv('--tier', 'S', '--tier', 'A'))
+    assert.equal(result.tierFilter, 'S')
+    assert.equal(result.apiKey, null)
+  })
+
+  it('supports the equals form for other value flags too', () => {
+    const result = parseArgs(argv('--probe-ttl=5000', '--config-dir=/tmp/fcm-x'))
+    assert.equal(result.probeTtlMs, 5000)
+    assert.equal(result.configDir, '/tmp/fcm-x')
+    assert.equal(result.apiKey, null)
   })
 })

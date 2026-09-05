@@ -8,14 +8,16 @@
  *   keypress that changes a filter mode, so the visible set is always consistent.
  *
  *   🎯 Filter precedence (first failing check hides the row):
- *   1. Configure-only mode (E key) — hide models with no API key or bad health
- *   2. Usable-only mode (E key, second cycle) — only Health UP + verdict Normal/Perfect/Slow
- *   3. Sticky favorites (Y key) — pinned favorites bypass tier/origin/text filters
- *   4. Tier filter (T key) — only show models in the selected tier family
- *   5. Origin filter (O key) — only show models from the selected provider
- *   6. Verdict filter (V key) — only show models with the selected verdict
- *   7. Health filter (H key) — only show models with the selected health status
- *   8. Custom text filter (Ctrl+P) — case-insensitive match on name, ctx, provider
+ *   1. Probe-cache broken models - cachedBroken rows stay hidden (Shift+B shows them)
+ *   2. 404-probe hidden models - keys in config.hiddenModels stay hidden
+ *   3. Configure-only mode (E key) - hide models with no API key or bad health
+ *   4. Usable-only mode (E key, second cycle) - only Health UP + verdict Normal/Perfect/Slow
+ *   5. Sticky favorites (Y key) - pinned favorites bypass tier/origin/text filters
+ *   6. Tier filter (T key) - only show models in the selected tier family
+ *   7. Origin filter (D key) - only show models from the selected provider
+ *   8. Verdict filter (Shift+V key) - only show models with the selected verdict
+ *   9. Health filter (Shift+H key) - only show models with the selected health status
+ *   10. Custom text filter (Ctrl+P) - case-insensitive match on name, ctx, provider
  *
  * @functions
  *   → createTuiFilters(state, deps) — Returns { applyTierFilter, buildOriginCycle }
@@ -54,6 +56,24 @@ export function createTuiFilters(state, { sources, getApiKey, PROVIDER_METADATA 
     const activeHealth = HEALTH_CYCLE[state.healthFilterMode]
 
     state.results.forEach(r => {
+      // 📖 Probe-cache / 404-probe auto-hide must survive every frame: this filter
+      // 📖 runs at ~12 FPS and used to reset r.hidden=false for passing rows,
+      // 📖 clobbering the hidden state set at startup (app.js probe-cache prefill)
+      // 📖 and by the Shift+P / Ctrl+Shift+P 404 probe (config.hiddenModels).
+      // 📖 Same representation as app.js + key-handler Shift+B: cachedBroken rows
+      // 📖 hide unless showBrokenMode, and hiddenModels stores `provider/modelId`
+      // 📖 keys. autoHideBrokenModels=false unhides both (matches startup behavior).
+      const autoHideBrokenEnabled = state.config.settings?.autoHideBrokenModels !== false
+      if (r.cachedBroken && !state.showBrokenMode && autoHideBrokenEnabled) {
+        r.hidden = true
+        return
+      }
+      if (autoHideBrokenEnabled
+        && state.config.hiddenModels instanceof Set
+        && state.config.hiddenModels.has(`${r.providerKey}/${r.modelId}`)) {
+        r.hidden = true
+        return
+      }
       const stickyFavorite = state.favoritesPinnedAndSticky && r.isFavorite
       // 📖 CLI-only tools and Zen models don't need traditional API keys —
       // 📖 they authenticate via their own CLI login flow, so "configured only" should never hide them.

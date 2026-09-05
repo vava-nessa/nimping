@@ -170,3 +170,45 @@ describe('getEnrichmentStats', () => {
     assert.equal(typeof stats.extendedBench.lastUpdated, 'string')
   })
 })
+
+describe('overlayModelsDevMetadata substring safety', () => {
+  // 📖 Helper: overlayModelsDevMetadata is async and takes injectable
+  // 📖 catalog/index/lookup deps, so no network or real catalog is needed.
+  async function runOverlay(models, lookupImpl) {
+    return overlayModelsDevMetadata(models, {
+      fetchCatalog: async () => ({ catalog: true }),
+      buildIndex: () => ({}),
+      lookup: lookupImpl,
+    })
+  }
+
+  it('skips substring-match overlays so curated ctx windows stay intact', async () => {
+    // 📖 A substring match can bind the WRONG catalog model; overlaying its
+    // 📖 context window onto a curated entry corrupted the catalog (drift skips
+    // 📖 substring matches for the same reason).
+    const models = [
+      { slug: 'model-a', label: 'Model A', ctx: '128k', providers: [{ providerKey: 'p', modelId: 'p/model-a', tier: 'A' }] },
+      { slug: 'model-b', label: 'Model B', ctx: '128k', providers: [{ providerKey: 'p', modelId: 'p/model-b', tier: 'A' }] },
+    ]
+    const out = await runOverlay(models, (id) => {
+      if (id.endsWith('/model-a')) {
+        return { entry: { contextWindow: 999_999, reasoning: true }, matchKind: 'substring' }
+      }
+      if (id.endsWith('/model-b')) {
+        return { entry: { contextWindow: 262_144, reasoning: true }, matchKind: 'exact' }
+      }
+      return null
+    })
+
+    const a = out.find((m) => m.slug === 'model-a')
+    assert.equal(a.metaSource, 'sources.js', 'substring match must not mark the model as models.dev-backed')
+    assert.equal(a.modelsDevMeta, null, 'substring match must not produce an overlay')
+    assert.equal(a.ctx, '128k', 'curated ctx window stays untouched')
+
+    const b = out.find((m) => m.slug === 'model-b')
+    assert.equal(b.metaSource, 'models.dev', 'exact matches still overlay')
+    assert.equal(b.modelsDevMeta.matchKind, 'exact')
+    assert.equal(b.modelsDevMeta.contextWindow, '262k')
+    assert.equal(b.modelsDevMeta.reasoning, true)
+  })
+})

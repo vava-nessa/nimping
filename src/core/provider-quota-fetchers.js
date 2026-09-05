@@ -134,10 +134,11 @@ export function parseSiliconFlowResponse(responseData) {
  * Create an in-memory cache entry.
  * @param {number|null} value
  * @param {number} expiresAt - Date.now() timestamp
- * @returns {{ value: number|null, expiresAt: number }}
+ * @param {number} [resolvedAt=Date.now()] - when the value was actually fetched
+ * @returns {{ value: number|null, expiresAt: number, resolvedAt: number }}
  */
-function makeCacheEntry(value, expiresAt) {
-  return { value, expiresAt }
+function makeCacheEntry(value, expiresAt, resolvedAt = Date.now()) {
+  return { value, expiresAt, resolvedAt }
 }
 
 // ─── Endpoint definitions ─────────────────────────────────────────────────────
@@ -320,7 +321,8 @@ export async function fetchProviderQuota(providerKey, apiKey, options = {}) {
   const pendingPromise = doFetch()
     .then((value) => {
       const finalValue = (typeof value === 'number' && Number.isFinite(value)) ? value : null
-      _defaultCache.set(cacheKey, makeCacheEntry(finalValue, Date.now() + cacheTtlMs))
+      const resolvedAt = Date.now()
+      _defaultCache.set(cacheKey, makeCacheEntry(finalValue, resolvedAt + cacheTtlMs, resolvedAt))
       return finalValue
     })
     .catch(() => {
@@ -483,12 +485,17 @@ function getActiveSnapshot(providerKey, now = Date.now()) {
     if (typeof entry.expiresAt !== 'number' || entry.expiresAt <= now) continue
     const value = entry.value
     if (typeof value !== 'number' || !Number.isFinite(value)) continue
+    // 📖 lastUpdated must be when the value was actually fetched, not "now": a
+    // 📖 TTL-cached value can be up to 60s old, and stamping it with now made it
+    // 📖 always beat real passive header snapshots in getQuota's freshest-wins
+    // 📖 pick while fabricating a fresh remaining/limit.
+    const resolvedAt = typeof entry.resolvedAt === 'number'
+      ? entry.resolvedAt
+      : entry.expiresAt - DEFAULT_CACHE_TTL_MS
     return makeSnapshot(
       { remaining: value, limit: 100, percent: value, windowType: 'unknown', source: 'active_fetcher' },
       'endpoint',
-      // 📖 active fetcher stores wall-clock ms at fetch time; expose it so
-      // 📖 getQuota's freshest-wins logic works on real timestamps.
-      now,
+      resolvedAt,
     )
   }
   return null

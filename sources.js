@@ -274,7 +274,7 @@ export const zai = [
   ['zai/glm-4.7-flash', 'GLM-4.7-Flash', 'A+', '59.2%', '200k'], // Fixed (2026-07-27): ctx '203k' → '200k' per official docs
   ['zai/glm-4.5-flash', 'GLM-4.5-Flash', 'S', '59.2%', '128k'],
   ['zai/glm-5-turbo', 'GLM-5-Turbo', 'S', '-', '200k'], // Added (2026-08-13)
-  ['zai/glm-4.7', 'GLM-4.7', 'S', '73.8%', '200k'], // Added (2026-08-13)
+  ['zai/glm-4.7', 'GLM-4.7', 'S+', '73.8%', '200k'], // Added (2026-08-13); tier fixed: 73.8% >= 70% is S+ on the documented scale
   ['zai/glm-4.6', 'GLM-4.6', 'S', '68.0%', '200k'], // Added (2026-08-13)
   // Removed (2026-08-23): zai/glm-4.7-flashx, zai/glm-5v-turbo, zai/glm-4.6v — now paid-only ("Insufficient balance or no resource package" per ping test)
   // ── A tier — SWE-bench Verified 40–50% ──
@@ -407,7 +407,7 @@ export const opencodeZen = [
 export const kilo = [
   ['kilo-auto/free',                         'Kilo Auto Free',      'A+', '-',     '256k'],
   // Removed (2026-09-05): kilo-auto/small (Kilo Auto Small) - no longer free: gateway now lists it with isFree=false and paid pricing ($0.05/M prompt, $0.40/M completion); it routes to paid small models
-  ['thinkingmachines/inkling-small:free', 'Thinking Machines Inkling Small (free)', 'A+', '80.2%', '1M'],
+  ['thinkingmachines/inkling-small:free', 'Thinking Machines Inkling Small (free)', 'S+', '80.2%', '1M'], // tier fixed: 80.2% >= 70% is S+ on the documented scale
   ['stepfun/step-3.7-flash:free', 'StepFun Step 3.7 Flash (free)', 'A+', '-', '262k'],
   ['poolside/laguna-s-2.1:free', 'Poolside Laguna S 2.1 (free)', 'A+', '-', '262k'],
   ['nvidia/nemotron-3-ultra-550b-a55b:free', 'NVIDIA Nemotron 3 Ultra (free)', 'A+', '-', '1M'],
@@ -418,8 +418,8 @@ export const kilo = [
   ['nvidia/nemotron-3.5-lightning:free', 'NVIDIA Nemotron 3.5 Lightning (free)', 'B+', '-', '1M'],
   ['dots-studio/dots-3-note-preview:free', 'Dots Studio Dots3-Note Preview (free)', 'B+', '-', '512k'],
   ['openrouter/free', 'OpenRouter Free Models Router', 'B', '-', '200k'],
-  ['minimax/minimax-m3:free', 'MiniMax M3 (free)', 'S', '80.5%', '1M'],
-  ['thinkingmachines/inkling:free', 'Thinking Machines Inkling (free)', 'S', '80.2%', '1M'],
+  ['minimax/minimax-m3:free', 'MiniMax M3 (free)', 'S+', '80.5%', '1M'], // tier fixed: 80.5% >= 70% is S+ on the documented scale
+  ['thinkingmachines/inkling:free', 'Thinking Machines Inkling (free)', 'S+', '80.2%', '1M'], // tier fixed: 80.2% >= 70% is S+ on the documented scale
 ]
 
 // 📖 LLM7 source - https://api.llm7.io/v1

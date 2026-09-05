@@ -58,7 +58,7 @@
   ],
   "scripts": {
     "start": "node bin/free-coding-models.js",
-    "test": "node --test test/test.js test/fcm-agent-core.test.js test/patch-openclaw.test.js test/provider-metadata.test.js test/config-permission-hint.test.js test/probe-cache.test.js test/passive-quota.test.js test/runtime-telemetry.test.js test/extended-benchmarks.test.js test/models-dev.test.js test/model-merger.test.js test/config-dir.test.js test/cache-dir.test.js test/model-family.test.js",
+    "test": "node --test test/test.js test/fcm-agent-core.test.js test/patch-openclaw.test.js test/provider-metadata.test.js test/config-permission-hint.test.js test/probe-cache.test.js test/passive-quota.test.js test/runtime-telemetry.test.js test/extended-benchmarks.test.js test/models-dev.test.js test/model-merger.test.js test/config-dir.test.js test/cache-dir.test.js test/model-family.test.js test/quality-pass-security.test.js test/quality-pass-reliability.test.js",
     "test:extended-benchmarks": "node --test test/extended-benchmarks.test.js",
     "test:models-dev": "node --test test/models-dev.test.js",
     "update:benchmarks": "node scripts/update-benchmarks.mjs",

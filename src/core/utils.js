@@ -140,8 +140,13 @@ export const NEW_MODELS = new Set([
 ]);
 
 export const getVerdict = (r) => {
+  // 📖 401/403 rows can still carry fast measurable pings, but calling them
+  // 📖 "Perfect" let --fiable / findBestModel recommend a model that cannot serve
+  // 📖 a single authenticated request. Auth-failing rows always get the
+  // 📖 least-trustworthy health label instead.
+  if (r.status === 'auth_error' || r.status === 'noauth') return 'Not Active'
   const avg = getAvg(r)
-  const wasUpBefore = r.pings.length > 0 && r.pings.some(p => p.code === '200')
+  const wasUpBefore = (r.pings || []).length > 0 && r.pings.some(p => p.code === '200')
 
   if (r.httpCode === '429') return 'Overloaded'
   if ((r.status === 'timeout' || r.status === 'down') && wasUpBefore) return 'Unstable'
@@ -200,9 +205,10 @@ export const getVerdict = (r) => {
 // 📖 Displayed as "Up%" column in the TUI — e.g., "85%" means 85% of pings got HTTP 200.
 // 📖 This metric is useful for identifying models that are technically "up" but flaky.
 export const getUptime = (r) => {
-  if (r.pings.length === 0) return 0
-  const successful = r.pings.filter(p => p.code === '200').length
-  return Math.round((successful / r.pings.length) * 100)
+  const pings = r.pings || []
+  if (pings.length === 0) return 0
+  const successful = pings.filter(p => p.code === '200').length
+  return Math.round((successful / pings.length) * 100)
 }
 
 // 📖 getP95: Calculate the 95th percentile latency from measurable pings (HTTP 200/401).
@@ -303,11 +309,13 @@ export const sortResults = (results, sortColumn, sortDirection, { benchmarkResul
         cmp = TIER_ORDER.indexOf(a.tier) - TIER_ORDER.indexOf(b.tier)
         break
       case 'origin':
-        // 📖 Sort by providerKey (or fallback to modelId prefix) for multi-provider support
-        cmp = (a.providerKey ?? 'nvidia').localeCompare(b.providerKey ?? 'nvidia')
+        // 📖 Sort by providerKey (or fallback to modelId prefix) for multi-provider support.
+        // 📖 Explicit 'en' locale: the default is ICU-dependent, so row order would
+        // 📖 otherwise vary between machines.
+        cmp = (a.providerKey ?? 'nvidia').localeCompare(b.providerKey ?? 'nvidia', 'en')
         break
       case 'model':
-        cmp = a.label.localeCompare(b.label)
+        cmp = a.label.localeCompare(b.label, 'en')
         break
       case 'ping': {
         // 📖 Sort by LAST ping only — gives a real-time "right now" snapshot
@@ -333,7 +341,7 @@ export const sortResults = (results, sortColumn, sortDirection, { benchmarkResul
         break
       }
       case 'condition':
-        cmp = a.status.localeCompare(b.status)
+        cmp = a.status.localeCompare(b.status, 'en')
         break
       case 'verdict': {
         // 📖 Sort by verdict order — "Perfect" first, "Pending" last
@@ -390,6 +398,10 @@ export const sortResults = (results, sortColumn, sortDirection, { benchmarkResul
         cmp = aRW - bRW
         break
     }
+
+    // 📖 Non-finite differences (e.g. Infinity - Infinity) collapse to 0: a NaN
+    // 📖 comparator result makes sort order machine-dependent and unstable.
+    if (!Number.isFinite(cmp)) cmp = 0
 
     // 📖 Flip comparison for descending order
     return sortDirection === 'asc' ? cmp : -cmp
@@ -485,7 +497,7 @@ export function findBestModel(results) {
 //     --daemon-status, --no-telemetry, --json, --help/-h (case-insensitive)
 //     --playground / playground subcommand (open the in-TUI chat playground)
 //     --fix-permissions / --yes / -y (auto-fix config permissions without prompting)
-//   - Value flag: --tier <letter> (the next non-flag arg is the tier value)
+//   - Value flag: --tier <letter> (also accepts the --tier=S equals form)
 //   - Probe-cache flags (t1):
 //     --reprobe / --no-cache (boolean) — force-rebuild the probe cache this run
 //     --probe-ttl <ms> (value)          — override the 24h default TTL
@@ -500,62 +512,56 @@ export function findBestModel(results) {
 //     reprobeMode, probeTtlMs, showBrokenMode }
 //
 // 📖 Note: apiKey may be null here — the main CLI falls back to env vars and saved config.
+
+// 📖 findValueFlag: collect every occurrence of a value flag, in both "--flag value"
+// 📖 and "--flag=value" forms. Equals form used to be silently ignored (the lookup
+// 📖 only matched the bare flag), and repeated flags used to leak their extra values
+// 📖 into the positional API-key slot because only the first index was marked used.
+// 📖 Returns { indices, values }: indices point at the VALUE args (for the equals
+// 📖 form, at the "--flag=value" arg itself, which is already treated as a flag).
+function findValueFlag(args, flag) {
+  const indices = []
+  const values = []
+  for (const [i, arg] of args.entries()) {
+    const lower = arg.toLowerCase()
+    if (lower.startsWith(`${flag}=`)) {
+      indices.push(i)
+      values.push(arg.slice(flag.length + 1))
+    } else if (lower === flag && args[i + 1] && !args[i + 1].startsWith('--')) {
+      indices.push(i + 1)
+      values.push(args[i + 1])
+    }
+  }
+  return { indices, values }
+}
+
+// 📖 First usable value of a flag, or null when the flag was not passed (or was
+// 📖 passed with an empty value like "--tier=").
+function firstFlagValue(found) {
+  return found.values.length > 0 && found.values[0] !== '' ? found.values[0] : null
+}
+
 export function parseArgs(argv) {
   const args = argv.slice(2)
   let apiKey = null
   const flags = []
 
-  // 📖 Determine which arg indices are consumed by --tier so we skip them
-  const tierIdx = args.findIndex(a => a.toLowerCase() === '--tier')
-  const tierValueIdx = (tierIdx !== -1 && args[tierIdx + 1] && !args[tierIdx + 1].startsWith('--'))
-    ? tierIdx + 1
-    : -1
-
-  // New value flags
-  const sortIdx = args.findIndex(a => a.toLowerCase() === '--sort')
-  const sortValueIdx = (sortIdx !== -1 && args[sortIdx + 1] && !args[sortIdx + 1].startsWith('--'))
-    ? sortIdx + 1
-    : -1
-
-  const originIdx = args.findIndex(a => a.toLowerCase() === '--origin')
-  const originValueIdx = (originIdx !== -1 && args[originIdx + 1] && !args[originIdx + 1].startsWith('--'))
-    ? originIdx + 1
-    : -1
-
-  const pingIntervalIdx = args.findIndex(a => a.toLowerCase() === '--ping-interval')
-  const pingIntervalValueIdx = (pingIntervalIdx !== -1 && args[pingIntervalIdx + 1] && !args[pingIntervalIdx + 1].startsWith('--'))
-    ? pingIntervalIdx + 1
-    : -1
-
-  // 📖 --probe-ttl <ms> — override the 24h probe-cache TTL (power users / debugging)
-  const probeTtlIdx = args.findIndex(a => a.toLowerCase() === '--probe-ttl')
-  const probeTtlValueIdx = (probeTtlIdx !== -1 && args[probeTtlIdx + 1] && !args[probeTtlIdx + 1].startsWith('--'))
-    ? probeTtlIdx + 1
-    : -1
-
-  // 📖 --sync-set [name] — auto-discover and live-probe models into a named router set
-  const syncSetIdx = args.findIndex(a => a.toLowerCase() === '--sync-set')
-  const syncSetValueIdx = (syncSetIdx !== -1 && args[syncSetIdx + 1] && !args[syncSetIdx + 1].startsWith('--'))
-    ? syncSetIdx + 1
-    : -1
-
-  // 📖 --config-dir <dir> — override where FCM's config files (config.json + backups/)
-  // 📖 live. Any directory works, e.g. --config-dir ~/.config/free-coding-models for the
-  // 📖 XDG layout. The bin entry point persists this as FCM_CONFIG_DIR before imports.
-  const configDirIdx = args.findIndex(a => a.toLowerCase() === '--config-dir')
-  const configDirValueIdx = (configDirIdx !== -1 && args[configDirIdx + 1] && !args[configDirIdx + 1].startsWith('--'))
-    ? configDirIdx + 1
-    : -1
+  // 📖 Resolve all value flags up front so every occurrence (space or equals form)
+  // 📖 can be marked consumed before the positional API-key scan runs.
+  const tierFlag = findValueFlag(args, '--tier')
+  const sortFlag = findValueFlag(args, '--sort')
+  const originFlag = findValueFlag(args, '--origin')
+  const pingIntervalFlag = findValueFlag(args, '--ping-interval')
+  const probeTtlFlag = findValueFlag(args, '--probe-ttl')
+  const syncSetFlag = findValueFlag(args, '--sync-set')
+  const configDirFlag = findValueFlag(args, '--config-dir')
+  const driftThresholdFlag = findValueFlag(args, '--drift-threshold')
 
   // 📖 Set of arg indices that are values for flags (not API keys)
   const skipIndices = new Set()
-  if (tierValueIdx !== -1) skipIndices.add(tierValueIdx)
-  if (sortValueIdx !== -1) skipIndices.add(sortValueIdx)
-  if (originValueIdx !== -1) skipIndices.add(originValueIdx)
-  if (pingIntervalValueIdx !== -1) skipIndices.add(pingIntervalValueIdx)
-  if (syncSetValueIdx !== -1) skipIndices.add(syncSetValueIdx)
-  if (probeTtlValueIdx !== -1) skipIndices.add(probeTtlValueIdx)
-  if (configDirValueIdx !== -1) skipIndices.add(configDirValueIdx)
+  for (const found of [tierFlag, sortFlag, originFlag, pingIntervalFlag, probeTtlFlag, syncSetFlag, configDirFlag, driftThresholdFlag]) {
+    for (const idx of found.indices) skipIndices.add(idx)
+  }
 
   for (const [i, arg] of args.entries()) {
     // 📖 -y is a boolean flag (security auto-fix), never an API key
@@ -610,7 +616,7 @@ export function parseArgs(argv) {
 
   // 📖 --sync-set [name] — auto-discover and populate a router set with best available models
   const syncSetMode = flags.includes('--sync-set')
-  const syncSetName = syncSetValueIdx !== -1 ? args[syncSetValueIdx] : null
+  const syncSetName = firstFlagValue(syncSetFlag)
 
   // 📖 --web / --gui / web subcommand — launch the web dashboard instead of the TUI
   const webMode = flags.includes('--web') || flags.includes('--gui') || args[0] === 'web'
@@ -626,10 +632,11 @@ export function parseArgs(argv) {
   const hideUnconfigured = flags.includes('--hide-unconfigured')
   const showUnconfigured = flags.includes('--show-unconfigured')
 
-  let tierFilter = tierValueIdx !== -1 ? args[tierValueIdx].toUpperCase() : null
-  let sortColumn = sortValueIdx !== -1 ? args[sortValueIdx].toLowerCase() : null
-  let originFilter = originValueIdx !== -1 ? args[originValueIdx] : null
-  let pingInterval = pingIntervalValueIdx !== -1 ? parseInt(args[pingIntervalValueIdx], 10) : null
+  let tierFilter = firstFlagValue(tierFlag)?.toUpperCase() ?? null
+  let sortColumn = firstFlagValue(sortFlag)?.toLowerCase() ?? null
+  let originFilter = firstFlagValue(originFlag)
+  let pingIntervalRaw = firstFlagValue(pingIntervalFlag)
+  let pingInterval = pingIntervalRaw !== null ? parseInt(pingIntervalRaw, 10) : null
   let sortDirection = sortDesc ? 'desc' : (sortAscFlag ? 'asc' : null)
 
   // 📖 Profile system removed - API keys now persist permanently across all sessions
@@ -645,19 +652,14 @@ export function parseArgs(argv) {
   // 📖 --probe-ttl overrides the 24h default; --show-broken un-hides broken models for this run.
   const reprobeMode = flags.includes('--reprobe') || flags.includes('--no-cache')
   const showBrokenMode = flags.includes('--show-broken')
-  const probeTtlRaw = probeTtlValueIdx !== -1 ? args[probeTtlValueIdx] : null
+  const probeTtlRaw = firstFlagValue(probeTtlFlag)
   const probeTtlMs = probeTtlRaw !== null ? parseInt(probeTtlRaw, 10) : null
 
   // 📖 Drift detection flags (t5):
   // 📖 --check-drift (boolean) — print a drift report vs models.dev, exit non-zero on mismatch.
   // 📖 --drift-threshold <N> (value) — only fail when N+ mismatches are found.
   const checkDriftMode = flags.includes('--check-drift')
-  const driftThresholdIdx = args.findIndex(a => a.toLowerCase() === '--drift-threshold')
-  const driftThresholdValueIdx = (driftThresholdIdx !== -1 && args[driftThresholdIdx + 1] && !args[driftThresholdIdx + 1].startsWith('--'))
-    ? driftThresholdIdx + 1
-    : -1
-  if (driftThresholdValueIdx !== -1) skipIndices.add(driftThresholdValueIdx)
-  const driftThresholdRaw = driftThresholdValueIdx !== -1 ? args[driftThresholdValueIdx] : null
+  const driftThresholdRaw = firstFlagValue(driftThresholdFlag)
   const driftThreshold = driftThresholdRaw !== null ? parseInt(driftThresholdRaw, 10) : null
 
   return {
@@ -716,7 +718,7 @@ export function parseArgs(argv) {
     // 📖 Runtime telemetry flag (t3) — see src/core/runtime-telemetry.js
     clearRuntimeMode,
     // 📖 Config location flag — see src/core/config.js getConfigDir()
-    configDir: configDirValueIdx !== -1 ? args[configDirValueIdx] : null,
+    configDir: firstFlagValue(configDirFlag),
     // 📖 Security auto-fix flag - see src/core/security.js checkConfigSecurity()
     fixPermissionsMode,
   }
@@ -1031,6 +1033,9 @@ export function getVersionStatusInfo(updateState, latestVersion, startupLatestVe
  * @returns {string} JSON string of formatted results
  */
 export function formatResultsAsJSON(results, sortBy = 'avg', limit = 0) {
+  // 📖 Only slice for a usable positive limit: a negative limit used to drop the
+  // 📖 last row(s) via slice(0, -1), and 0/undefined means "all results".
+  const effectiveLimit = Number.isInteger(limit) && limit > 0 ? limit : undefined
   const formatted = results
     .map((r, idx) => ({
       rank: r.idx || idx + 1,
@@ -1050,7 +1055,7 @@ export function formatResultsAsJSON(results, sortBy = 'avg', limit = 0) {
       status: r.status || null,
       httpCode: r.httpCode || null
     }))
-    .slice(0, limit || undefined)
+    .slice(0, effectiveLimit)
 
   return JSON.stringify(formatted, null, 2)
 }

@@ -7,8 +7,7 @@
  *   - Scan all supported tool configs for installed models
  *   - Parse tool-specific config files (YAML, JSON)
  *   - Soft-delete models with backup to ~/.free-coding-models-backups.json
- *   - Launch tools with selected models
- *   - Reinstall FCM endpoints for providers
+ *   (launch + reinstall live in tool-launchers.js / endpoint-installer.js)
  *
  *   📖 Supported tools:
  *   - Goose (~/.config/goose/config.yaml + custom_providers/*.json)
@@ -36,12 +35,10 @@
  *   → parseOpenHandsConfig — Parse OpenHands env file
  *   → parseAmpConfig — Parse Amp JSON config
  *   → softDeleteModel — Remove model from config with backup
- *   → launchToolWithModel — Launch tool with specific model
- *   → reinstallEndpoint — Reinstall FCM endpoint for provider
  *
- * @exports scanAllToolConfigs, softDeleteModel, launchToolWithModel, reinstallEndpoint
+ * @exports scanAllToolConfigs, parseToolConfig, softDeleteModel
  *
- * @see src/tool-launchers.js — for launch functions
+ * @see src/tool-launchers.js - for launch functions (launchToolWithModel lives there)
  * @see src/endpoint-installer.js — for reinstall logic
  */
 

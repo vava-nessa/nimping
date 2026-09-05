@@ -280,6 +280,35 @@ export function getReadableTextRgb(bgRgb) {
   return yiq >= 150 ? [10, 16, 28] : [248, 251, 255]
 }
 
+// 📖 Cached OS-level appearance probe ('dark' | 'light'). The sync execSync
+// 📖 probe blocks the event loop up to 100ms and used to run inside the G
+// 📖 keypress, visibly freezing the UI on every theme cycle. It now resolves
+// 📖 once at startup; later calls reuse the cache and kick off a non-blocking
+// 📖 re-resolve so a mid-session macOS appearance change is picked up on the
+// 📖 NEXT press instead of freezing the current one.
+let osThemeCache = null
+
+function execOsThemeProbeSync() {
+  try {
+    const style = execSync('defaults read -g AppleInterfaceStyle 2>/dev/null', { timeout: 100 }).toString().trim()
+    return style === 'Dark' ? 'dark' : 'light'
+  } catch {
+    // 📖 The key is absent in Light mode, so a non-zero exit means light.
+    return 'light'
+  }
+}
+
+function refreshOsThemeAsync() {
+  import('node:child_process')
+    .then(({ execFile }) => {
+      execFile('defaults', ['read', '-g', 'AppleInterfaceStyle'], { timeout: 500 }, (err, stdout) => {
+        // 📖 Same semantics as the sync probe: read error = Light mode.
+        osThemeCache = (!err && String(stdout).trim() === 'Dark') ? 'dark' : 'light'
+      })
+    })
+    .catch(() => {})
+}
+
 export function detectActiveTheme(configTheme = 'auto') {
   if (configTheme === 'dark' || configTheme === 'light') {
     activeTheme = configTheme
@@ -297,12 +326,14 @@ export function detectActiveTheme(configTheme = 'auto') {
   }
 
   if (process.platform === 'darwin') {
-    try {
-      const style = execSync('defaults read -g AppleInterfaceStyle 2>/dev/null', { timeout: 100 }).toString().trim()
-      activeTheme = style === 'Dark' ? 'dark' : 'light'
-    } catch {
-      activeTheme = 'light'
+    if (osThemeCache === null) {
+      // 📖 First call (startup): one sync probe, then never again this session.
+      osThemeCache = execOsThemeProbeSync()
+    } else {
+      // 📖 Subsequent G presses: reuse the cache, refresh it in the background.
+      refreshOsThemeAsync()
     }
+    activeTheme = osThemeCache
     return activeTheme
   }
 

@@ -44,6 +44,22 @@ export const SPEED_MODE_DURATION_MS = 60_000
 // 📖 After this much inactivity, the ping loop slows down to save quota.
 export const IDLE_SLOW_AFTER_MS = 5 * 60_000
 
+// 📖 Max ping results kept per model row. Older entries shift out so r.pings
+// 📖 cannot grow unbounded during long sessions (avg/p95/uptime become a
+// 📖 rolling window over the last 300 pings instead of the whole session).
+export const PING_HISTORY_CAP = 300
+
+/**
+ * 📖 sanitizePingInterval: Accept only a positive finite number, else fallback.
+ * 📖 Shared guard for config.settings.pingInterval readers (TUI state, palette).
+ * @param {unknown} value
+ * @param {number} fallbackMs
+ * @returns {number}
+ */
+export function sanitizePingInterval(value, fallbackMs) {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : fallbackMs
+}
+
 /**
  * 📖 intervalToPingMode: Map a raw interval (ms) to the closest ping mode label.
  * @param {number} intervalMs
@@ -88,13 +104,12 @@ export function createTuiState({
   const now = Date.now()
 
   // 📖 Dynamic normal interval from config (default 10s)
-  const normalInterval = config.settings?.pingInterval ?? PING_MODE_INTERVALS.normal
+  const normalInterval = sanitizePingInterval(config.settings?.pingInterval, PING_MODE_INTERVALS.normal)
   // 📖 Respect config.settings.pingInterval at startup (issue #155).
   // 📖 CLI override is already merged into config.settings.pingInterval in app.js.
-  const configuredInterval = config.settings?.pingInterval
-  const hasConfiguredInterval =
-    typeof configuredInterval === 'number' && Number.isFinite(configuredInterval) && configuredInterval > 0
-  const initialInterval = hasConfiguredInterval ? configuredInterval : PING_MODE_INTERVALS.speed
+  // 📖 sanitizePingInterval rejects 0/negative/NaN so a corrupt config can't break pinging.
+  const hasConfiguredInterval = sanitizePingInterval(config.settings?.pingInterval, 0) > 0
+  const initialInterval = hasConfiguredInterval ? normalInterval : PING_MODE_INTERVALS.speed
   const initialMode = intervalToPingMode(initialInterval)
 
   return {
@@ -164,6 +179,7 @@ export function createTuiState({
     settingsAddKeyMode: false,
     settingsEditBuffer: '',
     settingsErrorMsg: null,
+    settingsErrorMsgClearTimer: null, // 📖 Tracked auto-clear timer (see key-handler scheduleErrorMsgClear)
     settingsTestResults: {},
     settingsTestDetails: {},
     settingsUpdateState: 'idle',
@@ -251,6 +267,7 @@ export function createTuiState({
     installedModelsScrollOffset: 0,
     installedModelsData: [],
     installedModelsErrorMsg: null,
+    installedModelsErrorMsgClearTimer: null, // 📖 Tracked auto-clear timer (see key-handler scheduleErrorMsgClear)
 
     // 📖 Router Dashboard overlay (Shift+R)
     routerDashboardOpen: false,
@@ -272,7 +289,6 @@ export function createTuiState({
     routerDashboardEventError: null,
     routerDashboardNotice: null,
     routerDashboardNoticeTimer: null,
-    routerOnboardingScrollOffset: 0,
     routerDashboardEverOpened: false,
     routerDashboardCursorIndex: 0,
 

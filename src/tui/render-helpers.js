@@ -31,6 +31,8 @@
  *   - `calculateViewport`: Compute visible slice of model rows
  *   - `sortResultsWithPinnedFavorites`: Sort with pinned items at top
  *   - `adjustScrollOffset`: Clamp scrollOffset so cursor stays visible
+ *   - `runWithConcurrency`: Run async task factories with limited parallelism
+ *   - `loadChangelogCached`: TTL-cached changelog reader for overlay renders
  *   - `fadedRow`: Multiply every 24-bit RGB channel by a factor to fade an
  *     entire ANSI-colored line uniformly — used for "unusable" rows.
  *
@@ -51,12 +53,23 @@
 import chalk from 'chalk'
 import { OVERLAY_PANEL_WIDTH, TABLE_FIXED_LINES, TABLE_HEADER_LINES, TABLE_FOOTER_LINES } from '../core/constants.js'
 import { sortResults } from '../core/utils.js'
+import { loadChangelog } from '../core/changelog-loader.js'
+
+// 📖 Shared ANSI escape pattern: CSI sequences (colors, \x1b[K, cursor moves),
+// 📖 OSC sequences terminated by EITHER ST ("\x1b\\") or BEL ("\x07") so OSC 8
+// 📖 hyperlinks never inflate width regardless of which terminator the emitter
+// 📖 used, and any leftover escape pair. stripAnsi() and truncateAnsiWidth()
+// 📖 both derive from this one source so width accounting can never disagree.
+const ANSI_SEQUENCE_SOURCE = '\\x1b\\[[0-9;?]*[A-Za-z]|\\x1b\\][^\\x1b\\x07]*(?:\\x1b\\\\|\\x07)|\\x1b.'
+const ANSI_SEQUENCE = new RegExp(ANSI_SEQUENCE_SOURCE, 'g')                  // 📖 match + drop
+const ANSI_SEQUENCE_KEEP = new RegExp(`(${ANSI_SEQUENCE_SOURCE})`, 'g')      // 📖 split + keep tokens
 
 // 📖 stripAnsi: Remove ANSI control sequences to estimate visible text width before padding.
 // 📖 Strips ALL CSI sequences (SGR colors, \x1b[K clear, cursor moves) and OSC
-// 📖 sequences (hyperlinks) - every escape is zero-width for measurement purposes.
+// 📖 sequences (hyperlinks, BEL- or ST-terminated) - every escape is zero-width
+// 📖 for measurement purposes.
 export function stripAnsi(input) {
-  return String(input).replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').replace(/\x1b\][^\x1b]*\x1b\\/g, '')
+  return String(input).replace(ANSI_SEQUENCE, '')
 }
 
 // 📖 fadedRow: Multiply every 24-bit RGB channel inside an ANSI-colored string by `factor`
@@ -173,8 +186,7 @@ export function truncateAnsiWidth(input, maxWidth, { ellipsis = '…' } = {}) {
 
   // 📖 Split into ANSI sequences and visible characters so escapes are kept verbatim.
   // 📖 Capturing group makes String.split keep the separators (ANSI tokens) in the result.
-  const ANSI_TOKEN = /(\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x1b]*(?:\x1b\\|\u0007)?|\x1b.)/g
-  const tokens = text.split(ANSI_TOKEN).filter((t) => t !== '')
+  const tokens = text.split(ANSI_SEQUENCE_KEEP).filter((t) => t !== '')
   let out = ''
   let w = 0
   const ellWidth = displayWidth(ellipsis)
@@ -332,4 +344,50 @@ export function adjustScrollOffset(st) {
   const maxOffset = Math.max(0, total - maxSlots + 1)
   if (st.scrollOffset > maxOffset) st.scrollOffset = maxOffset
   if (st.scrollOffset < 0) st.scrollOffset = 0
+}
+
+// ─── Shared TUI task utilities ────────────────────────────────────────────────
+
+// 📖 runWithConcurrency: Execute async task factories with limited parallelism
+// 📖 (max `maxConcurrent` simultaneous). Per-task rejections are captured as
+// 📖 { error } in the results array so one failure never rejects the whole
+// 📖 batch (the 404 probe and the startup ping burst both rely on that).
+// 📖 Previously this lived inside key-handler.js only, so app.js's startup
+// 📖 burst had to fall back to unbounded Promise.all (~226 simultaneous pings,
+// 📖 a guaranteed 429 storm). Exported so every call site shares one impl.
+export async function runWithConcurrency(tasks, maxConcurrent) {
+  const results = new Array(tasks.length)
+  let nextIndex = 0
+  const workers = new Array(Math.max(1, maxConcurrent)).fill(null).map(async () => {
+    while (true) {
+      const index = nextIndex++
+      if (index >= tasks.length) break
+      try {
+        results[index] = await tasks[index]()
+      } catch (err) {
+        results[index] = { error: err }
+      }
+    }
+  })
+  return Promise.all(workers).then(() => results)
+}
+
+// ─── Cached changelog loader ──────────────────────────────────────────────────
+
+// 📖 loadChangelogCached: TTL-cached wrapper around core loadChangelog().
+// 📖 The raw loader does readdirSync + readFileSync of every changelog/*.md on
+// 📖 each call, and the TUI used to call it on EVERY keypress AND every render
+// 📖 frame while the changelog overlay was open (~12 disk reads/sec). The
+// 📖 parsed result is cached in module scope for a few seconds; the file set
+// 📖 only changes on a release, so a short TTL is plenty fresh (and keeps the
+// 📖 overlay correct across version bumps during development).
+const CHANGELOG_CACHE_TTL_MS = 5000
+let changelogCache = null
+let changelogCacheAt = 0
+export function loadChangelogCached() {
+  const now = Date.now()
+  if (changelogCache && (now - changelogCacheAt) < CHANGELOG_CACHE_TTL_MS) return changelogCache
+  changelogCache = loadChangelog()
+  changelogCacheAt = now
+  return changelogCache
 }

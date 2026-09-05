@@ -31,6 +31,7 @@
  *   → resolveCurrentNpmInstallTarget()   — Detect the npm prefix that owns the active package
  *   → getInstallArgs(pm, version)        — Build correct { bin, args } per package manager
  *   → getManualInstallCmd(pm, version)   — Human-readable install command string for error messages
+ *   → isNewerVersion(remote, local)      - Semver compare: true only when remote is greater
  *   → checkForUpdateDetailed()           — Fetch npm latest with explicit error info
  *   → checkForUpdate()                   — Startup wrapper, returns version string or null
  *   → isPackageDevMode()                 — Detect git/dev checkouts that must not self-update
@@ -38,7 +39,7 @@
  *   → runUpdate(latestVersion)           — Install new version via detected PM + relaunch
  * @exports
  *   detectPackageManager, resolveCurrentNpmInstallTarget, getInstallArgs, getManualInstallCmd,
- *   checkForUpdateDetailed, checkForUpdate, isPackageDevMode,
+ *   isNewerVersion, checkForUpdateDetailed, checkForUpdate, isPackageDevMode,
  *   enforceMandatoryStartupUpdate, runUpdate, fetchLastReleaseDate
  *
  * @see bin/free-coding-models.js — calls checkForUpdate() at startup and runUpdate() on confirm
@@ -233,6 +234,31 @@ export function getManualInstallCmd(pm, version, options = {}) {
 }
 
 /**
+ * 📖 isNewerVersion: dependency-free semver comparison of dotted numeric versions.
+ * 📖 Update availability used to be a string inequality, so a dist-tag rollback
+ * 📖 (remote < local) triggered a pointless "downgrade" install. Only a strictly
+ * 📖 GREATER remote version counts as an update now.
+ * @param {string} remoteVersion
+ * @param {string} localVersion
+ * @returns {boolean} true only when remoteVersion > localVersion
+ */
+export function isNewerVersion(remoteVersion, localVersion) {
+  const parseParts = (v) => String(v ?? '')
+    .trim()
+    .replace(/^v/i, '')
+    .split('.')
+    .map(part => parseInt(part, 10) || 0)
+  const remote = parseParts(remoteVersion)
+  const local = parseParts(localVersion)
+  const len = Math.max(remote.length, local.length)
+  for (let i = 0; i < len; i++) {
+    const diff = (remote[i] || 0) - (local[i] || 0)
+    if (diff !== 0) return diff > 0
+  }
+  return false
+}
+
+/**
  * 📖 checkForUpdateDetailed: Fetch npm latest version with explicit error details.
  * 📖 Used by settings manual-check flow to display meaningful status in the UI.
  * @returns {Promise<{ latestVersion: string|null, error: string|null }>}
@@ -242,7 +268,7 @@ export async function checkForUpdateDetailed() {
     const res = await fetch('https://registry.npmjs.org/free-coding-models/latest', { signal: AbortSignal.timeout(5000) })
     if (!res.ok) return { latestVersion: null, error: `HTTP ${res.status}` }
     const data = await res.json()
-    if (data.version && data.version !== LOCAL_VERSION) return { latestVersion: data.version, error: null }
+    if (data.version && isNewerVersion(data.version, LOCAL_VERSION)) return { latestVersion: data.version, error: null }
     return { latestVersion: null, error: null }
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unknown error'
