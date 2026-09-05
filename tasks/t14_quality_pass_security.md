@@ -1,12 +1,10 @@
 ---
 id: t14
 title: Quality pass: security, reliability, ponytail cleanup, docs
-status: Review
+status: Done
 created: 2026-09-05
-updated: 2026-09-05T23:27:25Z
+updated: 2026-09-05T23:35:52Z
 ---
-
-
 
 ## Completion report (2026-09-05)
 
