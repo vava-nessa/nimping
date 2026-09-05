@@ -14,9 +14,11 @@
  *   - loadAllApiKeys → Build a providerKey → apiKey map for the whole catalog
  */
 
-import { loadConfig, getApiKey } from 'free-coding-models/src/core/config.js'
-import { ENV_VAR_NAMES } from 'free-coding-models/src/core/provider-metadata.js'
-import { sources } from 'free-coding-models/sources.js'
+// 📖 Relative imports into the repo root (see direct-scanner.js): the package
+// 📖 is only consumed in-repo via file: dependency, never from npm.
+import { loadConfig, getApiKey } from '../../../src/core/config.js'
+import { ENV_VAR_NAMES } from '../../../src/core/provider-metadata.js'
+import { sources } from '../../../sources.js'
 
 /**
  * 📖 Resolve the effective API key for a given provider key.

@@ -17,6 +17,8 @@
 
 ## Installation
 
+> 📖 Path-only package: it depends on `fcm-agent-core` via `file:../fcm-agent-core` and is **not published to npm**. Clone the [free-coding-models repo](https://github.com/vava-nessa/free-coding-models) and install from your local clone.
+
 Add the absolute path of `packages/fcm-pi` to your `~/.pi/agent/settings.json`:
 
 ```json

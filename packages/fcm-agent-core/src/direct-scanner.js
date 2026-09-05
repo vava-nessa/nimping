@@ -25,9 +25,13 @@
  *   - directScan → Ping + benchmark candidates, emit progressive events, return scanned models
  */
 
-import { MODELS, sources } from 'free-coding-models/sources.js'
-import { ping } from 'free-coding-models/src/core/ping.js'
-import { benchmarkModel } from 'free-coding-models/src/core/benchmark.js'
+// 📖 Relative imports into the repo root: this package ships only inside a
+// 📖 clone of free-coding-models (file: dependency), so a self-name import
+// 📖 ('free-coding-models/...') would only resolve where npm happens to have
+// 📖 created a self-link in node_modules.
+import { MODELS, sources } from '../../../sources.js'
+import { ping } from '../../../src/core/ping.js'
+import { benchmarkModel } from '../../../src/core/benchmark.js'
 import { loadAllApiKeys } from './api-keys.js'
 import { parseSweScore } from './ranker.js'
 

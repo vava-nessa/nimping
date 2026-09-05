@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   fcm:
     image: ${FCM_IMAGE:-ghcr.io/vava-nessa/free-coding-models:latest}
@@ -13,12 +11,15 @@ services:
       # 📖 Optional: comma-separated origins allowed to access the web UI
       # 📖 from outside the container (e.g. "http://your-host:19280")
       FCM_ALLOWED_ORIGINS: ${FCM_ALLOWED_ORIGINS:-}
+      # 📖 Provider API keys passed from the host env or a .env file next to
+      # 📖 this compose file. Source of truth for this list:
+      # 📖 src/core/config.js (ENV_VARS map): add new providers there AND here.
       NVIDIA_API_KEY: ${NVIDIA_API_KEY:-}
       GROQ_API_KEY: ${GROQ_API_KEY:-}
       CEREBRAS_API_KEY: ${CEREBRAS_API_KEY:-}
       GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
       CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN:-}
-      CLOUDFLARE_ACCOUNT_ID: ${CLOUDFLARE_ACCOUNT_ID:-}
+      CLOUDFLARE_API_KEY: ${CLOUDFLARE_API_KEY:-}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       ORCAROUTER_API_KEY: ${ORCAROUTER_API_KEY:-}
       SAMBANOVA_API_KEY: ${SAMBANOVA_API_KEY:-}
@@ -29,7 +30,20 @@ services:
       DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:-}
       MISTRAL_API_KEY: ${MISTRAL_API_KEY:-}
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      GH_TOKEN: ${GH_TOKEN:-}
+      GITHUB_MODELS_TOKEN: ${GITHUB_MODELS_TOKEN:-}
       OPENCODE_ZEN_API_KEY: ${OPENCODE_ZEN_API_KEY:-}
+      KILO_API_KEY: ${KILO_API_KEY:-}
+      LLM7_API_KEY: ${LLM7_API_KEY:-}
+      ROUTEWAY_API_KEY: ${ROUTEWAY_API_KEY:-}
+      NOVITA_API_KEY: ${NOVITA_API_KEY:-}
+      OLLAMA_API_KEY: ${OLLAMA_API_KEY:-}
+      POLLINATIONS_API_KEY: ${POLLINATIONS_API_KEY:-}
+      POLLINATIONS_TOKEN: ${POLLINATIONS_TOKEN:-}
+      SILICONFLOW_API_KEY: ${SILICONFLOW_API_KEY:-}
+      REQUESTY_API_KEY: ${REQUESTY_API_KEY:-}
+      VERCEL_AI_GATEWAY_API_KEY: ${VERCEL_AI_GATEWAY_API_KEY:-}
+      AI_GATEWAY_API_KEY: ${AI_GATEWAY_API_KEY:-}
     volumes:
       - fcm-data:/home/fcm
 

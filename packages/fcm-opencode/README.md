@@ -16,6 +16,8 @@
 
 ## Installation
 
+> 📖 Path-only package: it depends on `fcm-agent-core` via `file:../fcm-agent-core` and is **not published to npm**. Clone the [free-coding-models repo](https://github.com/vava-nessa/free-coding-models) and install from your local clone.
+
 Symlink `packages/fcm-opencode/index.js` into your OpenCode plugins directory:
 
 ```bash

@@ -49,8 +49,11 @@ echo "Starting FCM router daemon..."
 # 📖 Use --daemon (foreground) instead of --daemon-bg so the container's
 # 📖 lifecycle is tied to the daemon process. If the daemon dies, the
 # 📖 container exits and Docker's restart policy can recover it.
+# 📖 Node is backgrounded directly, NOT piped through sed: with a pipe,
+# 📖 `$!` is the filter's PID, so SIGTERM in cleanup() killed the filter and
+# 📖 left the real daemon running, and `wait` returned the filter's exit code.
 cd /app
-FCM_HOST="${FCM_HOST}" node bin/free-coding-models.js --daemon 2>&1 | sed "s/^/[daemon] /" &
+FCM_HOST="${FCM_HOST}" node bin/free-coding-models.js --daemon &
 DAEMON_PID=$!
 echo "Daemon started with PID ${DAEMON_PID}"
 
@@ -83,7 +86,11 @@ trap cleanup TERM INT
 
 # 📖 Wait directly on the daemon PID — if the daemon crashes, the container
 # 📖 exits and Docker's restart policy can recover it cleanly.
+# 📖 Temporarily disable errexit so a non-zero daemon exit is captured and
+# 📖 logged instead of aborting the script before the final message.
+set +e
 wait "$DAEMON_PID"
 EXIT_CODE=$?
+set -e
 echo "Daemon exited with code ${EXIT_CODE}"
 exit "$EXIT_CODE"

@@ -19,7 +19,9 @@ import { directScan } from './direct-scanner.js'
 import { rankModels } from './ranker.js'
 import { isContextUsable, MIN_CONTEXT_WINDOW } from './model-config.js'
 import { getKeyForProvider } from './api-keys.js'
-import { sources } from 'free-coding-models/sources.js'
+// 📖 Relative import into the repo root (see direct-scanner.js): the package
+// 📖 is only consumed in-repo via file: dependency, never from npm.
+import { sources } from '../../../sources.js'
 
 /**
  * 📖 Map a daemon model payload to the shared ScannedModel shape.
