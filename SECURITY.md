@@ -61,10 +61,10 @@ Please do **not** disclose security vulnerabilities publicly (issues, discussion
 
 ### API keys
 
-- API keys are stored **locally only** in `~/.free-coding-models-keys.json`
+- API keys are stored **locally only** in `~/.free-coding-models.json` (the single config file: keys, provider toggles, favorites, settings, router config)
 - Keys are **never** sent to any server except the matching provider API endpoint
 - Keys are **never** logged, printed in plaintext, or included in telemetry
-- Config file has restrictive permissions (user-only readable)
+- Config file has restrictive permissions (user-only readable, `0600`)
 
 ### Network activity
 
@@ -80,7 +80,11 @@ No other outbound network connections are made.
 
 ### Dependencies
 
-This project has **1 runtime dependency**: `chalk` (terminal colors).
+Dependencies stay minimal and are all pure JavaScript (no native build step):
+
+- `chalk` - terminal colors for the CLI/TUI
+- `socket.io` / `socket.io-client` - realtime updates for the optional Web Dashboard
+- `@tanstack/react-table`, `@tanstack/react-virtual`, `@tabler/icons-react` - web dashboard UI
 
 Minimal dependency surface = minimal attack surface.
 

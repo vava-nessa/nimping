@@ -19,9 +19,9 @@
 > Every single new feature, engine enhancement, bug fix, or catalog change **MUST** function perfectly across all three user-facing surfaces of the application:
 > 1. **CLI (TUI)**: Terminal command line mode.
 > 2. **Web Dashboard / Docker**: Daemon-served web interface on `localhost:19280`.
-> 3. **Desktop version (Tauri)**: System tray utility.
+> 3. **Desktop version (Tauri)**: System tray utility. PLANNED, not implemented yet: `desktop/` holds only the PRD, no code exists today. Treat it as a design target, not an existing surface.
 >
-> If you add or modify logic in the shared core (`src/` or `sources.js`), you must ensure it does not break any surface, and that it is fully utilized by all three versions. Building a feature that only works on one surface while ignoring or breaking the others is strictly prohibited.
+> If you add or modify logic in the shared core (`src/` or `sources.js`), you must ensure it does not break the two shipped surfaces (TUI + Web Dashboard/Docker), and that the planned Desktop version will be able to reuse it. Building a feature that only works on one surface while ignoring or breaking the others is strictly prohibited.
 
 ## Website Development & Testing (MANDATORY)
 
@@ -34,7 +34,7 @@
 
 After completing any feature or fix, the agent MUST:
 
-1. Run `pnpm test` to verify all unit tests pass (62 tests across 11 suites)
+1. Run `pnpm test` to verify all unit tests pass (1050+ tests across 200+ suites; exact counts grow over time, `pnpm test` prints them)
 2. If any test fails, fix the issue immediately
 3. Re-run `pnpm test` until all tests pass
 4. Run `pnpm start` to verify there are no runtime errors
@@ -53,7 +53,7 @@ When releasing a new version, follow this exact process:
 3. **Commit ALL Changed Files**: `git add . && git commit -m "0.1.17"`
    - Always commit with just the version number as the message (e.g., "0.1.17")
    - Include ALL modified files in the commit (bin/, src/, test/, README.md, changelog/, etc.)
-4. **Push**: `git push origin main` — GitHub Actions will auto-publish to npm
+4. **Push**: `git push origin main` - GitHub Actions will auto-publish to npm
 5. **Wait for npm Publish":
    ```bash
    for i in $(seq 1 30); do sleep 10; v=$(npm view free-coding-models version 2>/dev/null); echo "Attempt $i: npm version = $v"; if [ "$v" = "0.1.17" ]; then echo "✅ published!"; break; fi; done
@@ -62,14 +62,14 @@ When releasing a new version, follow this exact process:
 6. **Test Binary**: `free-coding-models --help` (or any other command to verify it works)
 7. **Only when the global npm-installed version works → the release is confirmed**
 
-**Why:** A local `npm install -g .` can mask issues because it symlinks the repo. The real npm package is a tarball built from the `files` field — only a real npm install will catch missing files.
+**Why:** A local `npm install -g .` can mask issues because it symlinks the repo. The real npm package is a tarball built from the `files` field - only a real npm install will catch missing files.
 
 ## Real-World npm Verification (MANDATORY for every fix/feature)
 
 **Never trust local-only testing.** `pnpm start` runs from the repo and won't catch missing files in the published package. Always run the full npm verification:
 
 1. Bump version in `package.json` (e.g. `0.1.14` → `0.1.15`)
-2. Commit and push to `main` — GitHub Actions auto-publishes to npm
+2. Commit and push to `main` - GitHub Actions auto-publishes to npm
 3. Wait for the new version to appear on npm:
    ```bash
    # Poll until npm has the new version
@@ -85,7 +85,7 @@ When releasing a new version, follow this exact process:
    ```
 6. Only if the global npm-installed version works → the fix is confirmed
 
-**Why:** A local `npm install -g .` can mask issues because it symlinks the repo. The real npm package is a tarball built from the `files` field — if something is missing there, only a real npm install will catch it.
+**Why:** A local `npm install -g .` can mask issues because it symlinks the repo. The real npm package is a tarball built from the `files` field - if something is missing there, only a real npm install will catch it.
 
 ## Test Architecture
 
@@ -96,10 +96,10 @@ When releasing a new version, follow this exact process:
 - If you modify existing logic in `src/utils.js`, update the corresponding tests
 
 ### What's tested:
-- **sources.js data integrity** — model structure, valid tiers, no duplicates, count consistency
-- **Core logic** — getAvg, getVerdict, getUptime, filterByTier, sortResults, findBestModel
-- **CLI arg parsing** — all flags (--best, --fiable, --opencode, --openclaw, --tier)
-- **Package sanity** — package.json fields, bin entry exists, shebang, ESM imports
+- **sources.js data integrity** - model structure, valid tiers, no duplicates, count consistency
+- **Core logic** - getAvg, getVerdict, getUptime, filterByTier, sortResults, findBestModel
+- **CLI arg parsing** - all flags (--best, --fiable, --opencode, --openclaw, --tier)
+- **Package sanity** - package.json fields, bin entry exists, shebang, ESM imports
 
 ## GitHub Contributors
 
@@ -117,11 +117,11 @@ When new PRs are merged, add the contributor's GitHub handle to the footer in `b
 
 ## Testing the TUI with tmux
 
-The project's TUI is built with raw ANSI escape codes + chalk. To visually test TUI behavior, use **tmux** — pre-installed on macOS and provides native PTY support.
+The project's TUI is built with raw ANSI escape codes + chalk. To visually test TUI behavior, use **tmux** - pre-installed on macOS and provides native PTY support.
 
 ### Setup
 
-No setup needed — tmux is already installed. Just spawn sessions and send keys.
+No setup needed - tmux is already installed. Just spawn sessions and send keys.
 
 ### Core Commands
 
@@ -177,12 +177,12 @@ tmux new-session -d -s fcm-test "cd /Users/vava/Documents/GitHub/free-coding-mod
 sleep 2
 tmux capture-pane -p -t fcm-test
 
-# 3. Test tier filter — press T, wait, verify
+# 3. Test tier filter - press T, wait, verify
 tmux send-keys -t fcm-test "T"
 sleep 1
 tmux capture-pane -p -t fcm-test | tail -20
 
-# 4. Test cmd palette — Ctrl+P
+# 4. Test cmd palette - Ctrl+P
 tmux send-keys -t fcm-test C-p
 sleep 1
 tmux capture-pane -p -t fcm-test | tail -25
@@ -191,7 +191,7 @@ tmux capture-pane -p -t fcm-test | tail -25
 tmux send-keys -t fcm-test Escape
 sleep 1
 
-# 6. Test navigation — scroll down
+# 6. Test navigation - scroll down
 for i in {1..5}; do
   tmux send-keys -t fcm-test Down
   sleep 1
@@ -222,19 +222,19 @@ tmux send-keys -t fcm-live C-p  # open palette
 ### Tips
 
 - Use `sleep 1` after `send-keys` to let the TUI re-render before capturing
-- `tmux capture-pane -p` outputs ANSI codes — pipe through `cat -v` or strip with a tool if you need clean text
-- Sessions persist — you can detach (`Ctrl+b d`) and re-attach later
+- `tmux capture-pane -p` outputs ANSI codes - pipe through `cat -v` or strip with a tool if you need clean text
+- Sessions persist - you can detach (`Ctrl+b d`) and re-attach later
 - Use `tmux list-sessions` to see all active sessions
 - For read-only watching (no accidental input): `tmux attach -t <name> -r`
 
 ### When Should the Agent Use tmux Testing?
 
 Use tmux when:
-- **Visual Testing Needed** — Changes affect TUI rendering, layout, colors, or formatting
-- **Interaction Testing** — New keypress handlers, filters, or navigation logic
-- **Regression Detection** — Verify existing flows still work after code changes
-- **User-Facing Features** — Settings screen, mode switching, tier filtering
-- **Live Demo** — Let the user watch the TUI run in real-time
+- **Visual Testing Needed** - Changes affect TUI rendering, layout, colors, or formatting
+- **Interaction Testing** - New keypress handlers, filters, or navigation logic
+- **Regression Detection** - Verify existing flows still work after code changes
+- **User-Facing Features** - Settings screen, mode switching, tier filtering
+- **Live Demo** - Let the user watch the TUI run in real-time
 
 **Do NOT use tmux testing** for:
 - Unit test verification (use `pnpm test` instead)
@@ -262,7 +262,7 @@ Use tmux when:
 ### Rules
 
 - **Format:** Each file must start with `# Changelog vX.Y.Z - YYYY-MM-DD` followed by the release notes.
-- **Location:** All changelog files live in `changelog/` — there is **no** root-level `CHANGELOG.md`.
+- **Location:** All changelog files live in `changelog/` - there is **no** root-level `CHANGELOG.md`.
 - **Structure:** List changes under `### Added`, `### Fixed`, or `### Changed` as appropriate.
 - **Content:** Check all commits, code changes, and work done since the last version to ensure the changelog is **complete**. Add clear, user-facing explanations of *why* changes were made and *how* they work.
 - **Order:** Keep the structure clean so it can be reused directly in the GitHub Release notes screen.
@@ -306,23 +306,23 @@ When user requests `/bump`, `"push commit"`, or `"bump a new version now"`, exec
 - Ensure changelog is user-facing with clear bullet points
 - Use the format: `# Changelog vX.Y.Z - YYYY-MM-DD` followed by `### Added`, `### Changed`, `### Fixed` sections
 
-**⚠️ CRITICAL — Changelog = GitHub Release body:**
-The content of `changelog/vX.Y.Z.md` (minus the `# Changelog vX.Y.Z - YYYY-MM-DD` header line) MUST be used as the GitHub Release body when the release is created. This is the single source of truth — the changelog file IS the release notes. Never publish a GitHub Release with empty or auto-generated notes when a changelog file exists. The CI workflow automates this (it reads `changelog/vX.Y.Z.md` and uses it as `--notes-file`), but if you create a release manually, you must copy the changelog content into the release body verbatim.
+**⚠️ CRITICAL - Changelog = GitHub Release body:**
+The content of `changelog/vX.Y.Z.md` (minus the `# Changelog vX.Y.Z - YYYY-MM-DD` header line) MUST be used as the GitHub Release body when the release is created. This is the single source of truth - the changelog file IS the release notes. Never publish a GitHub Release with empty or auto-generated notes when a changelog file exists. The CI workflow automates this (it reads `changelog/vX.Y.Z.md` and uses it as `--notes-file`), but if you create a release manually, you must copy the changelog content into the release body verbatim.
 
 ### 3. Update Documentation
 - Review and update `README.md` if needed for new features/changes
 - Ensure documentation reflects current functionality
 
 ### 4. Pre-Commit Verification
-- Run `pnpm test` — fix any failures immediately
-- Run `pnpm start` — verify no runtime errors
+- Run `pnpm test` - fix any failures immediately
+- Run `pnpm start` - verify no runtime errors
 - Only proceed when all tests pass
 
 ### 5. Commit and Push
 - Update version in `package.json` to next sequential version
 - Identify the most significant change for this release
 - `git add . && git commit -m "VERSION_NUMBER - EMOJI SHORT_TITLE"` (version + emoji + main feature)
-- `git push origin main` — triggers GitHub Actions auto-publish
+- `git push origin main` - triggers GitHub Actions auto-publish
 
 ### 6. Verify npm Publication
 - Poll npm registry for 5 minutes:
@@ -332,12 +332,12 @@ The content of `changelog/vX.Y.Z.md` (minus the `# Changelog vX.Y.Z - YYYY-MM-DD
 
 ### 7. Final Verification
 - `npm install -g free-coding-models@NEW_VERSION`
-- `free-coding-models --help` — verify binary works globally
+- `free-coding-models --help` - verify binary works globally
 - Only confirm release when global npm-installed version functions correctly
 
-**Critical:** Never skip versions — consolidate all changes into the next sequential version number.
+**Critical:** Never skip versions - consolidate all changes into the next sequential version number.
 
-## Tweet after Bump (MANDATORY — propose after every version bump)
+## Tweet after Bump (MANDATORY - propose after every version bump)
 
 After every successful `bump` (npm publish verified + `free-coding-models --help` works), the agent MUST propose a ready-to-post tweet for vava.
 
@@ -365,7 +365,7 @@ what's new ?
 - Then `what's new ?` followed by 3 to 6 items max, each 1 line, each starts with a distinct emoji, plain language, no jargon.
 - Links go at the bottom, after the list: repo link then npm link, each prefixed with 📦.
 - Hashtag block is fixed: `#AI #Coding #OpenSource #VibeCoding #FreeLLM #freeai #codingmodels #freecodingmodels #pi #codex #claudecode`.
-- Keep total tweet under ~600 chars so it fits in one X post with line breaks. No em dash "—" ever.
+- Keep total tweet under ~600 chars so it fits in one X post with line breaks. No em dash "-" ever.
 - Propose it automatically, don't wait for vava to ask. Show it in a code block ready to copy.
 
 **Example for v0.5.84:**
@@ -390,4 +390,4 @@ what's new ?
 This project uses Kandown. Before task work, run `kandown work` and follow its output. <!-- kandown:agent-ref -->
 ## Task management
 
-This project uses **kandown** for task management. **Always run `kandown work` when starting a new task** — it prints the current rules and board state, kept in sync with the installed CLI version. (Tasks live in `./tasks/*.md`.)
+This project uses **kandown** for task management. **Always run `kandown work` when starting a new task** - it prints the current rules and board state, kept in sync with the installed CLI version. (Tasks live in `./tasks/*.md`.)

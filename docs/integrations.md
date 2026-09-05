@@ -33,11 +33,14 @@ Every tool writes the selected provider + model into its native config (or sets 
 | Hermes | `--hermes` | `~/.hermes/config.yaml` (via `hermes config set` + `hermes gateway restart`) |
 | ForgeCode | `--forgecode` | `~/.forge/.forge.toml` (`[[providers]]` block) |
 | ZCode | `--zcode` | `~/.zcode/v2/config.json` + `bots-model-cache.v2.json` |
-| Xcode Intelligence | `--xcode` | None — launches Xcode; configure the endpoint in Xcode settings |
+| Xcode Intelligence | `--xcode` | None: launches Xcode; configure the endpoint in Xcode settings |
 | Copilot CLI | `--copilot` | `COPILOT_*` BYOK env vars (`COPILOT_PROVIDER_BASE_URL`, `COPILOT_MODEL`, `COPILOT_PROVIDER_API_KEY`) |
-| FCM Router | `--fcm-router` | Connects the tool to the local router daemon (`http://localhost:19280/v1`, model `fcm`) |
+| jcode | `--jcode` | Provider env vars set, then launches `jcode` (model IDs are namespaced for its whitelist) |
+| Caveman Code | `--caveman` | Provider API key passed via the provider's standard env var, then launches `caveman` |
 
-> Default (no tool flag) = OpenCode CLI. Press **`Z`** in the TUI to cycle tools without restarting. Entries installed via the **`Y`** flow are namespaced under `fcm-*` in the target config.
+> To point any tool at the local Smart Model Router instead of a direct provider, use Base URL `http://localhost:19280/v1`, model `fcm`, key `fcm-local` (see [router.md](./router.md)). There is no dedicated `--fcm-router` CLI flag.
+
+> Default (no tool flag) = OpenCode CLI. Press **`Z`** in the TUI to cycle tools without restarting. Entries installed via the Install Endpoints flow are namespaced under `fcm-*` in the target config.
 
 ---
 
@@ -54,7 +57,7 @@ FCM auto-detects your configured providers, writes the selected model to `openco
 When launched inside `tmux`, FCM auto-adds `--port` so OpenCode can spawn sub-agent panes:
 
 - Priority 1: reuse `OPENCODE_PORT` if valid and free
-- Priority 2: auto-pick first free port in `4096–5095`
+- Priority 2: auto-pick first free port in `4096-5095`
 
 ```bash
 OPENCODE_PORT=4098 free-coding-models --opencode
@@ -84,7 +87,7 @@ Create or edit `~/.config/opencode/opencode.json`:
 }
 ```
 
-> ⚠️ Free models have usage limits — check [build.nvidia.com](https://build.nvidia.com) for quotas.
+> ⚠️ Free models have usage limits - check [build.nvidia.com](https://build.nvidia.com) for quotas.
 
 ---
 
@@ -118,25 +121,25 @@ FCM writes the selected model as primary into `~/.openclaw/openclaw.json` and la
 }
 ```
 
-> ⚠️ `providers` must be nested under `models.providers` — a root-level `providers` key is ignored.
+> ⚠️ `providers` must be nested under `models.providers` - a root-level `providers` key is ignored.
 >
 > ⚠️ The model must also be listed in `agents.defaults.models` (the allowlist), or OpenClaw rejects it with *"not allowed"*.
 
 ---
 
-## Install Endpoints (`Y` key)
+## Install Endpoints (Command Palette)
 
-`Y` opens a step-by-step flow to install a full provider catalog into a tool's config — so you can pick the model **inside** the tool instead of from FCM.
+The **Install endpoints** action (Command Palette via `Ctrl+P`, or the Web Dashboard header menu) opens a step-by-step flow to install a full provider catalog into a tool's config - so you can pick the model **inside** the tool instead of from FCM.
 
 Steps:
 
-1. **Provider** — pick one with a configured API key
-2. **Tool** — config-based (`OpenCode`, `OpenClaw`, `Crush`, `Goose`, `Pi`, `Aider`, `Amp`, `Qwen`) or env-based (`OpenHands`)
-3. **Scope** — all models or selected models only
-4. **Models** (if selected) — multi-select from the provider catalog
+1. **Provider** - pick one with a configured API key
+2. **Tool** - config-based (`OpenCode`, `OpenClaw`, `Crush`, `Goose`, `Pi`, `Aider`, `Amp`, `Qwen`) or env-based (`OpenHands`)
+3. **Scope** - all models or selected models only
+4. **Models** (if selected) - multi-select from the provider catalog
 
 Notes:
 
 - Entries are namespaced under `fcm-*` in the target config
 - `OpenCode CLI` and `OpenCode Desktop` share `opencode.json`
-- For `OpenHands`, FCM writes `~/.fcm-openhands-env` — source it before launching
+- For `OpenHands`, FCM writes `~/.fcm-openhands-env` - source it before launching

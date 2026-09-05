@@ -1,4 +1,4 @@
-# Sync Set — Automatic Router Set Discovery
+# Sync Set - Automatic Router Set Discovery
 
 `--sync-set [name]` auto-discovers, live-probes, and populates a named router
 set with the best currently-available coding models. It is designed for
@@ -20,28 +20,28 @@ free-coding-models --daemon-bg
 
 ## How It Works
 
-1. **Catalog scan** — Reads all models from `sources.js` and filters to
+1. **Catalog scan** - Reads all models from `sources.js` and filters to
    routeable providers where the user has an API key configured.
 
-2. **Candidate ranking** — Models are scored by:
+2. **Candidate ranking** - Models are scored by:
    - Tier (S+ > S > A+ > A > …)
    - SWE-bench Verified percentage
    - Coding keyword affinity (models whose ID mentions "coder", "code",
      "deepseek", "qwen", etc. get a small bonus)
 
-3. **Live probing** — Top candidates are tested sequentially with two requests:
-   - **Plain text** — `"Reply with exactly OK and nothing else."` — must
+3. **Live probing** - Top candidates are tested sequentially with two requests:
+   - **Plain text** - `"Reply with exactly OK and nothing else."` - must
      return exactly `OK`
-   - **Tool call** — `"Use the echo tool with text exactly OK"` — must
+   - **Tool call** - `"Use the echo tool with text exactly OK"` - must
      produce a valid `tool_calls` array
 
    Both must pass. This ensures coding tools that rely on function calling
    (Forge, OpenCode, Aider, Cursor, etc.) will work reliably.
 
-4. **Set population** — The first N passing models are written into the named
+4. **Set population** - The first N passing models are written into the named
    set in the config file (`~/.free-coding-models.json`).
 
-5. **Daemon reload** — If the router daemon is running, it receives `SIGHUP`
+5. **Daemon reload** - If the router daemon is running, it receives `SIGHUP`
    to hot-reload the updated config.
 
 ## Output
@@ -79,7 +79,7 @@ The command prints a JSON result to stdout, suitable for scripting:
 You can run `--sync-set` on a cron/launchd schedule to keep your set fresh:
 
 ```bash
-# crontab example — refresh every 4 hours
+# crontab example - refresh every 4 hours
 0 */4 * * * /usr/local/bin/free-coding-models --sync-set >> ~/.free-coding-models-sync.log 2>&1
 ```
 

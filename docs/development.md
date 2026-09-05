@@ -9,16 +9,16 @@ pnpm install
 pnpm start
 ```
 
-Requires Node.js 18+ and pnpm. The marketing site lives in `website/` (TanStack Start + Vite) and the agent extensions live in `packages/` — both have their own `package.json`.
+Requires Node.js 18+ and pnpm. The marketing site lives in `website/` (TanStack Start + Vite) and the agent extensions live in `packages/` - both have their own `package.json`.
 
 ## Repository layout
 
 | Path | Role |
 |------|------|
-| [`bin/free-coding-models.js`](../bin/free-coding-models.js) | CLI entrypoint — arg parsing, help text, launches the TUI or daemon. |
-| [`sources.js`](../sources.js) | The model catalog — a large catalog of models from 20+ providers. Edit here to add a provider. |
+| [`bin/free-coding-models.js`](../bin/free-coding-models.js) | CLI entrypoint - arg parsing, help text, launches the TUI or daemon. |
+| [`sources.js`](../sources.js) | The model catalog (24 providers / 229 live models, see [providers.md](./providers.md)). Edit here to add a provider, then re-run `node scripts/generate-provider-table.mjs` to refresh the provider table. |
 | `src/core/` | Pure logic: config, pinging, scoring, probes, tool launchers, router daemon, telemetry, sync-set, drift detection. No rendering. |
-| `src/tui/` | The ANSI terminal UI — app loop, renderer, key/mouse handlers, overlays, command palette, theme. |
+| `src/tui/` | The ANSI terminal UI - app loop, renderer, key/mouse handlers, overlays, command palette, theme. |
 | `src/data/benchmarks.json` | Extended benchmark overlay (Coding/Math/Agentic/Reasoning/MMLU-Pro/GPQA/HLE), refreshed via `pnpm update:benchmarks`. |
 | `packages/fcm-agent-core/` | Shared scan/rank/cache/daemon core for the agent extensions. |
 | `packages/fcm-pi/` · `packages/fcm-opencode/` | Pi and OpenCode adapters (thin renderers over the shared core). |
@@ -44,7 +44,7 @@ Requires Node.js 18+ and pnpm. The marketing site lives in `website/` (TanStack 
 
 ```bash
 pnpm test           # unit tests (node:test, zero deps)
-pnpm test:fcm       # AI E2E flow — drives the real TUI in a PTY
+pnpm test:fcm       # AI E2E flow - drives the real TUI in a PTY
 pnpm test:fcm:mock  # same flow but with a mock binary
 ```
 

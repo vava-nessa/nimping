@@ -61,7 +61,7 @@ API keys are stored under `apiKeys.<providerId>` using the provider IDs from the
 
 ## Environment variables
 
-The **TUI** reads env vars before config values. The **Smart Model Router daemon** reads config keys first, then falls back to env vars — because a background service may not inherit your shell environment.
+The **TUI** reads env vars before config values. The **Smart Model Router daemon** reads config keys first, then falls back to env vars - because a background service may not inherit your shell environment.
 
 | Variable | Provider |
 |----------|----------|
@@ -89,7 +89,7 @@ Daemon-only environment variables:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `FCM_HOST` | `0.0.0.0` | Bind host (`127.0.0.1` for localhost-only) |
-| `FCM_PORT` | `19280` | Router/dashboard port (scans `19280`–`19289` if busy) |
+| `FCM_PORT` | `19280` | Router/dashboard port (scans `19280`-`19289` if busy) |
 | `FCM_WEB_PORT` | `3333` | Catalog-only `web` dashboard port |
 | `FREE_CODING_MODELS_TELEMETRY` | `1` | `0` disables telemetry |
 
@@ -113,7 +113,7 @@ The `router` section is created automatically the first time you run `free-codin
 | Field | Default | Description |
 |-------|---------|-------------|
 | `enabled` | `false` until started | Whether router config is active. Starting the daemon enables it. |
-| `port` | `19280` | Preferred localhost port. If occupied, the daemon scans `19280`–`19289`. |
+| `port` | `19280` | Preferred localhost port. If occupied, the daemon scans `19280`-`19289`. |
 | `activeSet` | `fast-coding` | Model set used by `/v1/chat/completions`. |
 | `probeMode` | `balanced` | Health probe intensity: `eco`, `balanced`, or `aggressive`. |
 | `sets` | auto-created | Named ordered model groups. Lower priority numbers are tried first during cold start. |
