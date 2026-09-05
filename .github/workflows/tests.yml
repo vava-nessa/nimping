@@ -1,0 +1,42 @@
+# 📖 Run the unit test suite on every push to main and every PR.
+# 📖 Before this workflow existed, nothing in CI ran `pnpm test`: the 890+ tests
+# 📖 only ran when someone remembered locally. This is the quality gate for all
+# 📖 future contributions.
+# 📖 Manual check: `pnpm test` locally (zero network, zero real keys needed).
+
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ['20', '22']
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: 'pnpm'
+
+      - run: pnpm install --frozen-lockfile
+
+      # 📖 web/dist is gitignored but some router-daemon static-serving tests
+      # 📖 expect it to exist; build it exactly like `prepack` does.
+      - name: Build web dashboard
+        run: pnpm build:web
+
+      - name: Run unit tests
+        run: pnpm test
