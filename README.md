@@ -171,7 +171,7 @@ Flags combine freely in any order. The most common:
 | `--reprobe` / `--probe-ttl <ms>` / `--show-broken` | Probe cache control |
 | `--check-drift` | Diff `sources.js` vs models.dev, exit 1 on mismatch |
 | `--config-dir <dir>` | Custom config location |
-| `--fix-permissions` / `--yes` | Auto-fix config file permissions (chmod 600) |
+| `--fix-permissions` / `--yes` | Auto-fix config file permissions (chmod 600, NTFS ACLs via icacls on Windows) |
 | `--web` | Open the Web Dashboard instead of the TUI |
 | `--daemon` / `--daemon-bg` / `--daemon-status` / `--daemon-stop` | Smart Model Router lifecycle |
 | `--sync-set [name]` | Auto-populate a router set with the currently best models |
