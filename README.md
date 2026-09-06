@@ -28,10 +28,6 @@ free-coding-models
 </p>
 
 <p align="center">
-  <img src="website/public/demo.gif" alt="free-coding-models demo" width="100%">
-</p>
-
-<p align="center">
   <sub>Made with ❤️ and ☕ by <a href="https://vanessadepraute.dev">Vanessa Depraute</a> (aka <a href="https://vavanessa.dev">Vava-Nessa</a>)</sub>
 </p>
 
@@ -86,10 +82,6 @@ free-coding-models --fiable              # print the single most reliable model 
 - 🌐 Prefer a browser? `free-coding-models web` opens the [Web Dashboard](./docs/web-dashboard.md).
 - 🔀 Want one endpoint that never dies? `free-coding-models --daemon-bg` starts the [Smart Model Router](./docs/router.md).
 - 🤖 Live inside an agent? Install the [OpenCode plugin](./packages/fcm-opencode/README.md) or the [Pi extension](./packages/fcm-pi/README.md).
-
-<p align="center">
-  <img src="demo2.gif" alt="free-coding-models TUI demo" width="100%">
-</p>
 
 ---
 
