@@ -42,6 +42,7 @@ import UpdateChip from './components/update/UpdateChip.jsx'
 import RecommendView from './components/recommend/RecommendView.jsx'
 import IncompatibleFallbackModal from './components/launch/IncompatibleFallbackModal.jsx'
 import RouterView from './components/router/RouterView.jsx'
+import RouterV2View from './components/router/RouterV2View.jsx'
 import PlaygroundView from './components/playground/PlaygroundView.jsx'
 import InstalledModelsView from './components/installed/InstalledModelsView.jsx'
 import InstallEndpointsView from './components/install/InstallEndpointsView.jsx'
@@ -56,6 +57,7 @@ const VIEW_TO_NAV = {
   analytics: 'analytics',
   recommend: 'recommend',
   router: 'router',
+  'router-v2': 'router-v2',
 }
 
 export default function App() {
@@ -405,6 +407,15 @@ export default function App() {
                 onClose={() => handleNavigate('dashboard')}
                 onToast={addToast}
                 favorites={favorites}
+              />
+            </div>
+          )}
+
+          {currentView === 'router-v2' && (
+            <div className="view">
+              <RouterV2View
+                onClose={() => handleNavigate('dashboard')}
+                onToast={addToast}
               />
             </div>
           )}

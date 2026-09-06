@@ -47,6 +47,16 @@ import {
   toggleRouterDashboardProbePause,
 } from '../core/router-dashboard.js'
 import {
+  closeRouterV2DashboardOverlay,
+  cycleRouterV2ProbeMode,
+  openRouterV2DashboardOverlay,
+  renderRouterV2Dashboard,
+  setRouterV2Notice,
+  testAllVisibleViaRouterV2,
+  testModelViaRouterV2,
+} from '../core/router-v2/tui-dashboard.js'
+import { startRouterV2DaemonBackground, stopRouterV2Daemon } from '../core/router-v2/daemon.js'
+import {
   closePlaygroundOverlay,
   openPlaygroundOverlay,
   handlePlaygroundKeypress,
@@ -82,8 +92,8 @@ function spawnDaemonCommand(state, args) {
   })
   child.unref()
 
-  // 📖 Only capture stdout for start commands — stop doesn't need error surfacing.
-  if (!args.includes('--daemon-bg')) return
+  // 📖 Only capture stdout for start commands - stop doesn't need error surfacing.
+  if (!args.includes('--daemon-bg') && !args.includes('--router-v2-bg')) return
 
   let stdout = ''
   let stderr = ''
@@ -1502,6 +1512,7 @@ export function createKeyHandler(ctx) {
 
       case 'open-recommend': return openRecommendOverlay()
       case 'open-router-dashboard': return openRouterDashboardOverlay(state)
+      case 'open-router-v2-dashboard': return openRouterV2DashboardOverlay(state)
       case 'open-playground': return openPlaygroundOverlay(state)
       case 'open-token-usage': return openTokenUsageOverlay()
       case 'open-runtime-report': return openRuntimeReportOverlay()
@@ -1769,6 +1780,82 @@ export function createKeyHandler(ctx) {
       }
       if (key.name === 'c') {
         clearRouterDashboardRequestLog(state)
+        return
+      }
+      return
+    }
+
+    // 📖 Router v2 (BETA) dashboard: ↑↓ navigate the fallback chain,
+    // T tests the model under the cursor through the router (pinned request
+    // through the FULL chain), S toggles the daemon, I cycles probe speed,
+    // C clears the persisted history, Esc goes back.
+    if (state.routerV2DashboardOpen) {
+      const routingOrder = Array.isArray(state.routerV2Stats?.routingOrder) ? state.routerV2Stats.routingOrder : []
+      const maxCursor = Math.max(0, routingOrder.length)
+      const pageStep = Math.max(1, (state.terminalRows || 1) - 4)
+
+      if (key.name === 'escape') {
+        closeRouterV2DashboardOverlay(state)
+        return
+      }
+
+      if (key.name === 's') {
+        const isRunning = state.routerV2Status === 'ready' || state.routerV2Status === 'partial'
+        state.routerV2Status = 'loading'
+        spawnDaemonCommand(state, [isRunning ? '--router-v2-stop' : '--router-v2-bg'])
+        return
+      }
+
+      if (key.name === 'return' || key.name === 'enter') {
+        if ((state.routerV2CursorIndex ?? 0) === maxCursor) {
+          const isRunning = state.routerV2Status === 'ready' || state.routerV2Status === 'partial'
+          state.routerV2Status = 'loading'
+          spawnDaemonCommand(state, [isRunning ? '--router-v2-stop' : '--router-v2-bg'])
+        }
+        return
+      }
+
+      if (key.name === 't') {
+        const entry = routingOrder[state.routerV2CursorIndex ?? 0]
+        if (entry?.key) void testModelViaRouterV2(state, entry.key)
+        return
+      }
+
+      if (key.name === 'up' || key.name === 'k') {
+        state.routerV2CursorIndex = Math.max(0, (state.routerV2CursorIndex ?? 0) - 1)
+        return
+      }
+      if (key.name === 'down' || key.name === 'j') {
+        state.routerV2CursorIndex = Math.min(maxCursor, (state.routerV2CursorIndex ?? 0) + 1)
+        return
+      }
+      if (key.name === 'pageup') {
+        state.routerV2ScrollOffset = Math.max(0, (state.routerV2ScrollOffset || 0) - pageStep)
+        return
+      }
+      if (key.name === 'pagedown') {
+        state.routerV2ScrollOffset = (state.routerV2ScrollOffset || 0) + pageStep
+        return
+      }
+      if (key.name === 'home') {
+        state.routerV2CursorIndex = 0
+        state.routerV2ScrollOffset = 0
+        return
+      }
+      if (key.name === 'i') {
+        try { await cycleRouterV2ProbeMode(state) } catch {}
+        return
+      }
+      if (key.name === 'c') {
+        void (async () => {
+          try {
+            if (state.routerV2BaseUrl) {
+              await fetch(`${state.routerV2BaseUrl}/api/router-v2/history`, { method: 'DELETE' })
+              state.routerV2History = null
+              setRouterV2Notice(state, 'success', 'Request history cleared.')
+            }
+          } catch {}
+        })()
         return
       }
       return
@@ -2926,6 +3013,16 @@ export function createKeyHandler(ctx) {
       return
     }
 
+    // 📖 Shift+V: Open / close the Router v2 (BETA) dashboard.
+    if (key.name === 'v' && key.shift && !key.ctrl && !key.meta) {
+      if (state.routerV2DashboardOpen) {
+        closeRouterV2DashboardOverlay(state)
+        return
+      }
+      openRouterV2DashboardOverlay(state)
+      return
+    }
+
     // 📖 Shift+T: open the Token Usage screen.
     if (key.name === 't' && key.shift && !key.ctrl && !key.meta) {
       openTokenUsageOverlay()
@@ -3067,6 +3164,25 @@ export function createKeyHandler(ctx) {
     // 📖 Measures wall-clock response time and tokens per second (TPS).
     if (key.ctrl && key.name === 'a') {
       void runBenchmarkOnSelected()
+      return
+    }
+
+    // 📖 Ctrl+T: test the selected model THROUGH the Router v2 daemon (beta).
+    // 📖 Unlike Ctrl+A (direct provider call), this exercises the full routing
+    // chain: schema normalization, pre-prompt, content gate and the breaker
+    // update. The pinned-model request runs with failover disabled.
+    if (key.ctrl && key.name === 't' && !key.shift) {
+      const selected = state.visibleSorted?.[state.cursor]
+      if (selected?.providerKey && selected?.modelId) {
+        void testModelViaRouterV2(state, `${selected.providerKey}/${selected.modelId}`)
+      }
+      return
+    }
+
+    // 📖 Ctrl+Shift+T: test every visible configured model through Router v2,
+    // results streaming into the Shift+V overlay as they land.
+    if (key.ctrl && key.shift && key.name === 't') {
+      void testAllVisibleViaRouterV2(state)
       return
     }
 

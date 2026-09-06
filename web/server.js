@@ -52,6 +52,8 @@ import { getInstallTargetModes, installProviderEndpoints, getConfiguredInstallab
 import { isModelCompatibleWithTool } from '../src/core/tool-metadata.js'
 import { sendUsageTelemetry } from '../src/core/telemetry.js'
 import { getRouterDaemonStatus, startRouterDaemonBackground, stopRouterDaemon, getRouterTokensPath, getRouterPortPath } from '../src/core/router-daemon.js'
+import { getRouterV2DaemonStatus, startRouterV2DaemonBackground, stopRouterV2Daemon } from '../src/core/router-v2/daemon.js'
+import { getRouterV2PortPath } from '../src/core/router-v2/constants.js'
 import { scanAllToolConfigs, softDeleteModel } from '../src/core/installed-models-manager.js'
 import {
   TASK_TYPES,
@@ -613,6 +615,29 @@ function readTokenFile() {
   } catch { return null }
 }
 
+// ─── Router v2 (BETA) daemon proxy helpers ─────────────────────────────────
+// 📖 v2 runs next to v1 on its own port (19380 prod / 29380 dev). The web
+// dashboard talks to it through these proxies; the SPA page itself lives at
+// /router-v2 and is marked BETA on every surface.
+function readDaemonV2Port() {
+  try {
+    const raw = readFileSync(getRouterV2PortPath(), 'utf8').trim()
+    if (/^\d+$/.test(raw)) return Number(raw)
+  } catch {}
+  return null
+}
+
+async function proxyToDaemonV2(path, options = {}) {
+  const port = readDaemonV2Port()
+  if (!port) return null
+  const timeoutMs = Number.isFinite(options.timeoutMs) ? options.timeoutMs : DAEMON_PROXY_TIMEOUT_MS
+  try {
+    const url = `http://127.0.0.1:${port}${path}`
+    const resp = await fetch(url, { ...options, signal: AbortSignal.timeout(timeoutMs) })
+    return { ok: resp.ok, status: resp.status, data: await resp.json().catch(() => null) }
+  } catch { return null }
+}
+
 function normalizeToolMode(mode) {
   return typeof mode === 'string' && TOOL_MODES.has(mode) ? mode : 'opencode'
 }
@@ -904,6 +929,65 @@ async function handleRequest(req, res) {
         }
       }
       sendJson(res, proxy?.status || 502, proxy?.data || { error: 'Daemon not reachable' })
+      return
+    }
+
+    // ── Router v2 (BETA) proxy: everything under /api/router-v2/* is forwarded
+    // ── to the v2 daemon. /api/router-v2/status|stats map to the daemon's
+    // ── /health|/stats; the rest keeps the /api/router-v2 prefix. start/stop
+    // ── run the v2 lifecycle helpers directly in this process.
+    if (url.pathname === '/api/router-v2' || url.pathname.startsWith('/api/router-v2/')) {
+      const v2SubPath = url.pathname.replace(/^\/api\/router-v2/, '') || '/'
+      if (v2SubPath === '/start' && req.method === 'POST') {
+        try {
+          const result = await startRouterV2DaemonBackground()
+          sendJson(res, 200, result)
+        } catch (err) {
+          sendJson(res, 500, { ok: false, error: err.message })
+        }
+        return
+      }
+      if (v2SubPath === '/stop' && req.method === 'POST') {
+        if (req.method !== 'POST') { res.writeHead(405); res.end('Method Not Allowed'); return }
+        try {
+          const result = await stopRouterV2Daemon()
+          sendJson(res, 200, result)
+        } catch (err) {
+          sendJson(res, 500, { ok: false, error: err.message })
+        }
+        return
+      }
+      if (v2SubPath === '/' || v2SubPath === '/status') {
+        try {
+          const status = await getRouterV2DaemonStatus()
+          sendJson(res, 200, status)
+        } catch (err) {
+          sendJson(res, 200, { ok: false, running: false, router: 'v2', error: err.message })
+        }
+        return
+      }
+      if (req.method !== 'GET' && req.method !== 'POST' && req.method !== 'DELETE') {
+        res.writeHead(405); res.end('Method Not Allowed'); return
+      }
+      let upstreamPath
+      if (v2SubPath === '/stats') upstreamPath = '/stats'
+      else upstreamPath = `/api/router-v2${v2SubPath}`
+      const proxyOptions = { method: req.method, timeoutMs: v2SubPath === '/test' ? 30000 : DAEMON_PROXY_TIMEOUT_MS }
+      if (req.method === 'POST' || req.method === 'DELETE') {
+        proxyOptions.headers = { 'Content-Type': 'application/json' }
+        try {
+          const body = await readJsonBody(req)
+          proxyOptions.body = JSON.stringify(body)
+        } catch {
+          proxyOptions.body = '{}'
+        }
+      }
+      const proxy = await proxyToDaemonV2(upstreamPath, proxyOptions)
+      if (proxy) {
+        sendJson(res, proxy.status || 502, proxy.data || { ok: false, error: proxy.error || 'v2 daemon error' })
+        return
+      }
+      sendJson(res, 200, { ok: false, running: false, router: 'v2', error: 'Router v2 daemon not reachable (start it with: free-coding-models --router-v2-bg)' })
       return
     }
 

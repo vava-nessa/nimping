@@ -21,6 +21,7 @@
 
 import { buildCliHelpLines } from './cli-help.js'
 import { renderRouterDashboard as renderRouterDashboardOverlay } from '../core/router-dashboard.js'
+import { renderRouterV2Dashboard as renderRouterV2DashboardOverlay } from '../core/router-v2/tui-dashboard.js'
 import { renderPlayground as renderPlaygroundOverlay } from '../core/playground.js'
 import { themeColors, getThemeStatusLabel, getProviderRgb } from './theme.js'
 import { getProviderBillingNote, getProviderLabelWithBilling } from '../core/provider-metadata.js'
@@ -1016,6 +1017,8 @@ export function createOverlayRenderers(state, deps) {
     lines.push(`  ${key('Ctrl+P')}  Open ⚡️ command palette  ${hint('(search and run actions quickly)')}`)
     lines.push(`  ${key('Ctrl+A')}  AI Speed Test  ${hint('(benchmark selected model → time + TPS)')}`)
     lines.push(`  ${key('Ctrl+U')}  Global AI Speed Test  ${hint('(benchmark all models; Settings can auto-run it on startup)')}`)
+    lines.push(`  ${key('Ctrl+T')}  Test selected model via Router v2  ${hint('(real request through the daemon: gate + failover included)')}`)
+    lines.push(`  ${key('Ctrl+Shift+T')}  Test all visible models via Router v2  ${hint('(results stream into the Shift+V dashboard)')}`)
     lines.push(`  ${key('Shift+P')}  Re-probe failed rows  ${hint('(retry only rows showing auth fail / 429 / 404 / timeout - not the whole list)')}`)
     lines.push(`  ${key('Ctrl+Shift+P')}  Probe All Models  ${hint('(test all configured models; auto-hide broken 404/410)')}`)
     lines.push(`  ${key('Space')}  Expand selected row  ${hint('(2-line detail: provider, endpoint, full model id; Space again or move to collapse)')}`)
@@ -1413,6 +1416,12 @@ export function createOverlayRenderers(state, deps) {
     return renderRouterDashboardOverlay(state, { LOCAL_VERSION })
   }
 
+  // 📖 Router v2 (BETA) overlay (Shift+V): hardened failover daemon view with
+  // request chains, DEGRADED states and pinned-model tests through the router.
+  function renderRouterV2Dashboard() {
+    return renderRouterV2DashboardOverlay(state, { LOCAL_VERSION })
+  }
+
   // ─── Playground overlay ───────────────────────────────────────────────────────
   // 📖 Renders the in-TUI chat playground when the user presses `;` or opens
   // 📖 it from the command palette. All chat traffic flows to the local
@@ -1648,6 +1657,7 @@ export function createOverlayRenderers(state, deps) {
     renderChangelog,
     renderInstalledModels,
     renderRouterDashboard,
+    renderRouterV2Dashboard,
     renderPlayground,
     renderIncompatibleFallback,
     renderTokenUsage,

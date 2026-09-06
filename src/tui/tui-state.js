@@ -292,6 +292,28 @@ export function createTuiState({
     routerDashboardEverOpened: false,
     routerDashboardCursorIndex: 0,
 
+    // 📖 Router v2 (BETA) dashboard overlay (Shift+V). Talks to the parallel
+    // v2 daemon on port 19380: same defensive polling shape as v1 plus
+    // pinned-model test results and the persisted request-chain history.
+    routerV2DashboardOpen: false,
+    routerV2Status: 'idle',
+    routerV2BaseUrl: null,
+    routerV2Port: null,
+    routerV2Health: null,
+    routerV2Stats: null,
+    routerV2History: null,
+    routerV2Error: null,
+    routerV2ScrollOffset: 0,
+    routerV2CursorIndex: 0,
+    routerV2PollTimer: null,
+    routerV2EventAbort: null,
+    routerV2Notice: null,
+    routerV2NoticeTimer: null,
+    routerV2TestResults: new Map(),
+    routerV2TestRunning: new Set(),
+    routerV2BatchTest: null,
+    routerV2LastEventAt: null,
+
     // 📖 Custom text filter (Ctrl+P → type text → Enter). Ephemeral — not saved to config.
     customTextFilter: null,
 

@@ -133,6 +133,23 @@
   letter-spacing: 0.3px;
 }
 
+/* 📖 BETA badge (Router v2): amber so a pre-stable surface is obvious at a
+   📖 glance before the user routes production traffic through it. */
+.betaBadge {
+  font-size: 9px;
+  font-weight: 700;
+  font-family: var(--font-mono);
+  color: #b45309;
+  background: rgba(245, 158, 11, 0.15);
+  border: 1px solid rgba(245, 158, 11, 0.45);
+  padding: 1px 4px;
+  border-radius: 3px;
+  margin-left: 2px;
+  line-height: 1.4;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
 /* ─── Overflow menu (kebab) ─── */
 .menuWrap { position: relative; }
 .menuTrigger {
@@ -265,7 +282,7 @@
 /* 📖 Responsive — at narrow widths the nav collapses into the kebab menu.
    📖 We never reintroduce a left sidebar. The table keeps 100% width. */
 @media (max-width: 1024px) {
-  .navBtn > span:not(.comingBadge) { display: none; }
+  .navBtn > span:not(.comingBadge):not(.betaBadge) { display: none; }
   .navBtn { padding: 0 8px; }
   .center { max-width: 320px; }
 }

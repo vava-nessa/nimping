@@ -608,6 +608,13 @@ export function parseArgs(argv) {
   const daemonBackgroundMode = flags.includes('--daemon-bg')
   const daemonStopMode = flags.includes('--daemon-stop')
   const daemonStatusMode = flags.includes('--daemon-status')
+  // 📖 Router v2 (beta) lifecycle flags - run v2 alongside v1 on its own
+  // port (19380) with persisted breakers + decision traces. See
+  // src/core/router-v2/daemon.js and docs/router-v2.md.
+  const routerV2Mode = flags.includes('--router-v2')
+  const routerV2BackgroundMode = flags.includes('--router-v2-bg')
+  const routerV2StopMode = flags.includes('--router-v2-stop')
+  const routerV2StatusMode = flags.includes('--router-v2-status')
 
   // 📖 --fix-permissions / --yes / -y - auto-answer "yes" to the config-permission
   // 📖 security prompt (chmod 600, best-effort on Windows) so scripts, CI and
@@ -706,6 +713,11 @@ export function parseArgs(argv) {
     checkDriftMode,
     driftThreshold,
     daemonStatusMode,
+    // 📖 Router v2 (beta) lifecycle flags - see src/core/router-v2/daemon.js
+    routerV2Mode,
+    routerV2BackgroundMode,
+    routerV2StopMode,
+    routerV2StatusMode,
     // 📖 Profile system removed - API keys now persist permanently across all sessions
     recommendMode,
     devMode,

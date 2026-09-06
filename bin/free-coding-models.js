@@ -118,7 +118,7 @@ async function main() {
   ensureFavoritesConfig(config);
 
   const isDevMode = isPackageDevMode();
-  const shouldEnforceUpdate = !cliArgs.daemonStopMode && !cliArgs.daemonStatusMode;
+  const shouldEnforceUpdate = !cliArgs.daemonStopMode && !cliArgs.daemonStatusMode && !cliArgs.routerV2StopMode && !cliArgs.routerV2StatusMode;
   const startupUpdate = shouldEnforceUpdate
     ? await enforceMandatoryStartupUpdate(config, {
       saveConfig,
@@ -168,7 +168,11 @@ async function main() {
     && !cliArgs.daemonMode
     && !cliArgs.daemonBackgroundMode
     && !cliArgs.daemonStopMode
-    && !cliArgs.daemonStatusMode;
+    && !cliArgs.daemonStatusMode
+    && !cliArgs.routerV2Mode
+    && !cliArgs.routerV2BackgroundMode
+    && !cliArgs.routerV2StopMode
+    && !cliArgs.routerV2StatusMode;
   try {
     await checkConfigSecurity({ autoFix: cliArgs.fixPermissionsMode, promptAllowed });
   } catch {
@@ -205,6 +209,32 @@ async function main() {
       : cliArgs.daemonStopMode
         ? await stopRouterDaemon()
         : await getRouterDaemonStatus();
+
+    console.log(JSON.stringify(result, null, 2));
+    process.exit(result.ok ? 0 : 1);
+  }
+
+  // 📖 Router v2 (beta) lifecycle flags - same shape as the v1 daemon flags
+  // but targeting the parallel v2 daemon on port 19380. v1 and v2 can run at
+  // the same time; each has its own PID/port files.
+  if (cliArgs.routerV2Mode || cliArgs.routerV2BackgroundMode || cliArgs.routerV2StopMode || cliArgs.routerV2StatusMode) {
+    const {
+      getRouterV2DaemonStatus,
+      runRouterV2Daemon,
+      startRouterV2DaemonBackground,
+      stopRouterV2Daemon,
+    } = await import('../src/core/router-v2/daemon.js');
+
+    if (cliArgs.routerV2Mode) {
+      await runRouterV2Daemon();
+      return;
+    }
+
+    const result = cliArgs.routerV2BackgroundMode
+      ? await startRouterV2DaemonBackground()
+      : cliArgs.routerV2StopMode
+        ? await stopRouterV2Daemon()
+        : await getRouterV2DaemonStatus();
 
     console.log(JSON.stringify(result, null, 2));
     process.exit(result.ok ? 0 : 1);

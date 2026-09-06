@@ -151,6 +151,16 @@ free-coding-models --daemon-stop    # stop
 
 > 📖 **Full guide (probes, circuit breaker, failover, Playground, `--sync-set`, REST API):** [`docs/router.md`](./docs/router.md)
 
+### 🧪 Router v2 (beta)
+
+A hardened second router that runs **next to** the stable one: content-validated failover (a 200 with empty or garbage output is a failure and fails over), quota-aware routing with `Retry-After` pauses, persisted circuit breakers with a DEGRADED warning state, per-request decision traces, an Anthropic `/v1/messages` endpoint, and "test via router" actions that exercise the real routing chain. Same sets, same keys, own port (`19380`), zero impact on v1.
+
+```bash
+free-coding-models --router-v2-bg   # start (beta)
+```
+
+Open the TUI with `Shift+V` (or the "Router v2" entry in the Web Dashboard) to see the live fallback chain, per-request attempt chains and run pinned-model tests. Docs: [`docs/router-v2.md`](./docs/router-v2.md).
+
 ---
 
 ## 📖 CLI Flags

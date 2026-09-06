@@ -123,6 +123,7 @@ import { createOverlayRenderers } from './overlays.js'
 import { createKeyHandler, createMouseEventHandler } from './key-handler.js'
 import { createMouseHandler, containsMouseSequence } from './mouse.js'
 import { stopRouterDashboardClient } from '../core/router-dashboard.js'
+import { stopRouterV2DashboardClient } from '../core/router-v2/tui-dashboard.js'
 import { getToolModeOrder, getToolMeta } from '../core/tool-metadata.js'
 import { startExternalTool } from '../core/tool-launchers.js'
 import { getToolInstallPlan, installToolWithPlan, isToolInstalled } from '../core/tool-bootstrap.js'
@@ -758,6 +759,7 @@ export async function runApp(cliArgs, config, startupOptions = {}) {
     clearTimeout(state.pingIntervalObj)
     clearInterval(state.versionRecheckTimer)
     stopRouterDashboardClient(state)
+    stopRouterV2DashboardClient(state)
     process.stdout.write(ALT_LEAVE)
     if (process.stdout.isTTY) {
       process.stdout.flush && process.stdout.flush()
@@ -782,6 +784,7 @@ export async function runApp(cliArgs, config, startupOptions = {}) {
     clearTimeout(state.pingIntervalObj)
     clearInterval(state.versionRecheckTimer)
     stopRouterDashboardClient(state)
+    stopRouterV2DashboardClient(state)
     // 📖 Remove the actual registered wrappers (see keypressWrapper/mouseDataWrapper).
     if (keypressWrapper) process.stdin.removeListener('keypress', keypressWrapper)
     if (mouseDataWrapper) process.stdin.removeListener('data', mouseDataWrapper)
@@ -1118,6 +1121,8 @@ export async function runApp(cliArgs, config, startupOptions = {}) {
         ? overlays.renderInstalledModels()
       : state.routerDashboardOpen
         ? overlays.renderRouterDashboard()
+      : state.routerV2DashboardOpen
+        ? overlays.renderRouterV2Dashboard()
       : state.playgroundOpen
         ? overlays.renderPlayground()
       : state.tokenUsageOpen
@@ -1261,9 +1266,9 @@ export async function runApp(cliArgs, config, startupOptions = {}) {
     }
 
     state.results.forEach(r => {
-      // 📖 When router dashboard is open, ONLY ping favorites every second
+      // 📖 When a router dashboard is open, ONLY ping favorites every second
       // 📖 to prevent massive rate limiting across the entire 90+ model catalog.
-      if (state.routerDashboardOpen) {
+      if (state.routerDashboardOpen || state.routerV2DashboardOpen) {
         const favKey = `${r.providerKey}/${r.modelId}`
         if (!state.config.favorites.includes(favKey)) return
       }

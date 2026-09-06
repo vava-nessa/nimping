@@ -1,0 +1,294 @@
+/* 📖 Router v2 (BETA) page styles. Amber accents mark the beta surface;
+   state colors match the TUI overlay (green up, amber degraded, red open). */
+
+.wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding-bottom: 32px;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.titleBlock {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.title {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 700;
+}
+
+.betaChip {
+  font-size: 10px;
+  font-weight: 700;
+  font-family: var(--font-mono, monospace);
+  color: #b45309;
+  background: rgba(245, 158, 11, 0.15);
+  border: 1px solid rgba(245, 158, 11, 0.45);
+  padding: 2px 6px;
+  border-radius: 4px;
+  letter-spacing: 0.6px;
+}
+
+.actions {
+  display: flex;
+  gap: 8px;
+}
+
+.ghostBtn,
+.startBtn,
+.stopBtn,
+.testBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text);
+  cursor: pointer;
+}
+
+.ghostBtn:hover { border-color: var(--color-accent); }
+.testBtn:disabled { opacity: 0.55; cursor: default; }
+
+.startBtn {
+  background: #16783c;
+  border-color: #16783c;
+  color: #fff;
+}
+
+.stopBtn {
+  background: rgba(160, 30, 30, 0.12);
+  border-color: rgba(160, 30, 30, 0.5);
+  color: inherit;
+}
+
+.betaBanner {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--color-text-dim);
+  background: rgba(245, 158, 11, 0.08);
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  border-radius: 8px;
+  padding: 10px 14px;
+}
+
+.betaBanner code {
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+}
+
+.stoppedCard {
+  border: 1px dashed var(--color-border);
+  border-radius: 10px;
+  padding: 22px;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-items: center;
+}
+
+.stoppedCard p { margin: 0; }
+
+.codeBlock {
+  display: block;
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  white-space: pre-wrap;
+  background: var(--color-bg, rgba(0, 0, 0, 0.25));
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  text-align: left;
+}
+
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 12px;
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  padding: 12px 14px;
+  background: var(--color-surface);
+}
+
+.cardLabel {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--color-text-dim);
+}
+
+.cardValue {
+  font-size: 17px;
+  font-weight: 700;
+}
+
+.cardSub {
+  font-size: 12px;
+  color: var(--color-text-dim);
+}
+
+.section {
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.sectionHead {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-surface);
+}
+
+.sectionHead h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.sectionHint {
+  font-size: 12px;
+  color: var(--color-text-dim);
+}
+
+.sectionActions {
+  padding: 10px 14px;
+  border-top: 1px solid var(--color-border);
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.table th {
+  text-align: left;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--color-text-dim);
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.table td {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--color-border);
+  vertical-align: top;
+}
+
+.primaryRow td { background: rgba(22, 120, 60, 0.08); }
+.chainRow { cursor: pointer; }
+.chainRow:hover td { background: rgba(127, 127, 127, 0.08); }
+.detailRow td { background: rgba(127, 127, 127, 0.05); }
+
+.detailBody {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  font-size: 12px;
+}
+
+.detailBody ol,
+.detailBody ul {
+  margin: 4px 0 0 18px;
+  padding: 0;
+}
+
+.modelCell {
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+}
+
+.chainCell {
+  font-family: var(--font-mono, monospace);
+  font-size: 11.5px;
+  max-width: 420px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stateUp { color: #2ea45f; font-weight: 700; }
+.stateDegraded { color: #d97706; font-weight: 700; }
+.stateHalfOpen { color: #d97706; }
+.stateOpen { color: #dc4444; font-weight: 700; }
+.stateAuth { color: #dc4444; }
+.stateQuota { color: #d97706; font-weight: 700; }
+.stateStale { color: var(--color-text-dim); }
+.stateUnknown { color: var(--color-text-dim); }
+
+.pauseUntil {
+  display: block;
+  font-size: 11px;
+  color: var(--color-text-dim);
+}
+
+.outcomeServed {
+  color: #2ea45f;
+  font-weight: 700;
+}
+
+.outcomeFailed {
+  color: #dc4444;
+  font-weight: 700;
+}
+
+.outcomeAborted {
+  color: var(--color-text-dim);
+}
+
+.lastResort {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: #d97706;
+  border: 1px solid rgba(217, 119, 6, 0.5);
+  border-radius: 3px;
+  padding: 1px 4px;
+}
+
+.empty {
+  color: var(--color-text-dim);
+  font-size: 13px;
+}
+
+.setupGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 14px;
+  padding: 14px;
+}
+
+.dim {
+  color: var(--color-text-dim);
+  font-size: 12.5px;
+  padding: 0 14px 14px;
+  margin: 0;
+}

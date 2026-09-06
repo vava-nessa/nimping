@@ -118,7 +118,7 @@ export function getRouterPortRange() {
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const CLI_ENTRY_PATH = join(__dirname, '..', '..', 'bin', 'free-coding-models.js')
 const LOCAL_VERSION = JSON.parse(readFileSync(join(__dirname, '..', '..', 'package.json'), 'utf8')).version
-const MAX_BODY_BYTES = 10 * 1024 * 1024
+export const MAX_BODY_BYTES = 10 * 1024 * 1024
 /**
  * 📖 normalizeToolCallsResponse — fix malformed tool_calls from upstream.
  * Some providers return finish_reason: "tool_calls" but message has no tool_calls array,
@@ -128,7 +128,7 @@ const MAX_BODY_BYTES = 10 * 1024 * 1024
  * @param {object} data - parsed JSON response object
  * @returns {boolean} true if mutated
  */
-function normalizeToolCallsResponse(data) {
+export function normalizeToolCallsResponse(data) {
   if (!data || typeof data !== 'object' || !Array.isArray(data.choices)) return false
   let mutated = false
   for (const choice of data.choices) {
@@ -145,16 +145,16 @@ function normalizeToolCallsResponse(data) {
   return mutated
 }
 
-const MAX_REQUEST_LOG = 200
-const MAX_SSE_CLIENTS = 10
-const MAX_SSE_CLIENTS_PER_ORIGIN = 5
-const MAX_CONCURRENT_REQUESTS = 50
-const MAX_PROBE_WINDOW = 20
+export const MAX_REQUEST_LOG = 200
+export const MAX_SSE_CLIENTS = 10
+export const MAX_SSE_CLIENTS_PER_ORIGIN = 5
+export const MAX_CONCURRENT_REQUESTS = 50
+export const MAX_PROBE_WINDOW = 20
 const TOKEN_FLUSH_INTERVAL_MS = 60000
 const CONFIG_RELOAD_INTERVAL_MS = 10000
-const STATS_RETENTION_DAYS = 90
-const RETRYABLE_STATUS_CODES = new Set([408, 429, 500, 502, 503, 504, 529])
-const AUTH_STATUS_CODES = new Set([401, 403])
+export const STATS_RETENTION_DAYS = 90
+export const RETRYABLE_STATUS_CODES = new Set([408, 429, 500, 502, 503, 504, 529])
+export const AUTH_STATUS_CODES = new Set([401, 403])
 const RATE_LIMIT_HEADER_NAMES = [
   'retry-after',
   'x-ratelimit-limit',
@@ -171,16 +171,16 @@ const RATE_LIMIT_HEADER_NAMES = [
   'x-ratelimit-reset-tokens',
 ]
 
-function nowIso() {
+export function nowIso() {
   return new Date().toISOString()
 }
 
-function modelKey(provider, model) {
+export function modelKey(provider, model) {
   return `${provider}/${model}`
 }
 
 // 📖 parseJsonResult is still local - it returns {ok, value/error} which is different from safeJsonParse
-function parseJsonResult(raw) {
+export function parseJsonResult(raw) {
   try {
     return { ok: true, value: JSON.parse(raw) }
   } catch (error) {
@@ -188,7 +188,7 @@ function parseJsonResult(raw) {
   }
 }
 
-function isProcessAlive(pid) {
+export function isProcessAlive(pid) {
   if (!Number.isInteger(pid) || pid <= 0) return false
   try {
     process.kill(pid, 0)
@@ -198,7 +198,7 @@ function isProcessAlive(pid) {
   }
 }
 
-function readNumberFile(path) {
+export function readNumberFile(path) {
   try {
     const value = Number.parseInt(readFileSync(path, 'utf8').trim(), 10)
     return Number.isFinite(value) ? value : null
@@ -207,7 +207,7 @@ function readNumberFile(path) {
   }
 }
 
-function headerEntries(headers) {
+export function headerEntries(headers) {
   const entries = {}
   if (!headers || typeof headers.forEach !== 'function') return entries
   headers.forEach((value, key) => {
@@ -222,12 +222,12 @@ function headerEntries(headers) {
   return entries
 }
 
-function getHeaderValue(headers, name) {
+export function getHeaderValue(headers, name) {
   if (!headers || typeof headers.get !== 'function') return ''
   return headers.get(name) || ''
 }
 
-function extractRateLimitHeaders(headers) {
+export function extractRateLimitHeaders(headers) {
   const values = {}
   for (const name of RATE_LIMIT_HEADER_NAMES) {
     const value = getHeaderValue(headers, name)
@@ -236,7 +236,7 @@ function extractRateLimitHeaders(headers) {
   return values
 }
 
-function parseRetryAfterMs(value) {
+export function parseRetryAfterMs(value) {
   if (!value) return null
   const seconds = Number(value)
   if (Number.isFinite(seconds)) return Math.max(0, Math.round(seconds * 1000))
@@ -245,7 +245,7 @@ function parseRetryAfterMs(value) {
   return null
 }
 
-function hasZeroRemainingQuota(rateLimitHeaders) {
+export function hasZeroRemainingQuota(rateLimitHeaders) {
   return Object.entries(rateLimitHeaders).some(([name, value]) => {
     if (!name.includes('remaining')) return false
     const numeric = Number(value)
@@ -253,11 +253,11 @@ function hasZeroRemainingQuota(rateLimitHeaders) {
   })
 }
 
-function isLikelyHtmlText(text) {
+export function isLikelyHtmlText(text) {
   return /^\s*(<!doctype\s+html|<html[\s>]|<head[\s>]|<body[\s>])/i.test(text || '')
 }
 
-function isLikelyHtmlResponse(headers, text = '') {
+export function isLikelyHtmlResponse(headers, text = '') {
   const contentType = getHeaderValue(headers, 'content-type').toLowerCase()
   return contentType.includes('text/html') || isLikelyHtmlText(text)
 }
@@ -268,7 +268,7 @@ function isLikelyHtmlResponse(headers, text = '') {
 // 📖 endpoints. Blocks CSRF from malicious tabs and key exfiltration from
 // 📖 cross-origin scripts. Plain CLI calls (curl/fetch without Origin) are
 // 📖 allowed because they cannot be triggered by a browser context.
-function isLoopbackHostname(hostname) {
+export function isLoopbackHostname(hostname) {
   if (!hostname) return false
   const h = hostname.toLowerCase()
   return h === 'localhost' || h === '127.0.0.1' || h === '[::1]' || h === '::1' || h.endsWith('.localhost')
@@ -279,7 +279,7 @@ function isLoopbackHostname(hostname) {
 // 📖 `.local` or `.internal`. Used when the daemon is explicitly bound to a
 // 📖 wildcard address (FCM_HOST=0.0.0.0) so LAN clients keep working; it
 // 📖 never grants origin trust on its own.
-function isPrivateNetworkHostname(hostname) {
+export function isPrivateNetworkHostname(hostname) {
   if (!hostname) return false
   const h = hostname.toLowerCase()
   // 📖 mDNS / zero-conf hostnames
@@ -304,7 +304,7 @@ function getAllowedOrigins() {
   return _allowedOriginsCache
 }
 
-function isSameOriginOrLocal(req) {
+export function isSameOriginOrLocal(req) {
   const origin = req.headers.origin
   const referer = req.headers.referer || req.headers.referrer
   const hasOrigin = typeof origin === 'string' && origin.length > 0
@@ -346,7 +346,7 @@ function isSameOriginOrLocal(req) {
 // 📖 Loopback Host values are always accepted; when the daemon is bound to a
 // 📖 non-loopback FCM_HOST (LAN / Docker), that hostname plus private-network
 // 📖 hosts are accepted too. Public domains stay rejected.
-function isAllowedHostHeader(hostHeader, port, boundHost) {
+export function isAllowedHostHeader(hostHeader, port, boundHost) {
   if (typeof hostHeader !== 'string' || !hostHeader) return false
   const value = hostHeader.toLowerCase()
   const loopback = [`127.0.0.1:${port}`, `localhost:${port}`, `[::1]:${port}`, '127.0.0.1', 'localhost', '[::1]']
@@ -366,18 +366,18 @@ function isAllowedHostHeader(hostHeader, port, boundHost) {
 // 📖 Set FCM_ROUTER_TOKEN to require `Authorization: Bearer <token>` (or
 // 📖 `x-api-key: <token>`) on every /v1/* request; leave it unset for the
 // 📖 default no-auth local behavior.
-function getRouterToken() {
+export function getRouterToken() {
   return (process.env.FCM_ROUTER_TOKEN || '').trim()
 }
 
-function safeTokenCompare(candidate, token) {
+export function safeTokenCompare(candidate, token) {
   const bufA = Buffer.from(String(candidate || ''))
   const bufB = Buffer.from(token)
   if (bufA.length !== bufB.length) return false
   return timingSafeEqual(bufA, bufB)
 }
 
-function isAuthorizedForV1(req) {
+export function isAuthorizedForV1(req) {
   const token = getRouterToken()
   if (!token) return true
   const auth = req.headers.authorization || ''
@@ -386,7 +386,7 @@ function isAuthorizedForV1(req) {
   return typeof apiKeyHeader === 'string' && safeTokenCompare(apiKeyHeader.trim(), token)
 }
 
-const MIME_TYPES = {
+export const MIME_TYPES = {
   '.html': 'text/html; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
   '.js': 'application/javascript; charset=utf-8',
@@ -396,7 +396,7 @@ const MIME_TYPES = {
   '.ico': 'image/x-icon',
 }
 
-function getWebModelsPayload(runtime) {
+export function getWebModelsPayload(runtime) {
   // 📖 Hoist router + active set lookups out of the per-model loop so we
   // 📖 don't re-resolve them ~200 times per request.
   const router = runtime.routerConfig()
@@ -473,7 +473,7 @@ function getWebUpdateStatusPayload() {
   }
 }
 
-function getWebStatePayload(runtime) {
+export function getWebStatePayload(runtime) {
   const router = runtime.routerConfig()
   const probeInterval = router.probeIntervals?.[router.probeMode] || DEFAULT_ROUTER_SETTINGS.probeIntervals.balanced
   return {
@@ -491,7 +491,7 @@ function getWebStatePayload(runtime) {
   }
 }
 
-function getWebConfigPayload(runtime) {
+export function getWebConfigPayload(runtime) {
   const providers = {}
   for (const [key, src] of Object.entries(sources)) {
     const rawKey = runtime.getApiKeyForProvider(key)
@@ -517,9 +517,9 @@ function getWebConfigPayload(runtime) {
   }
 }
 
-const WEB_DIST_DIR = resolvePath(__dirname, '..', '..', 'web', 'dist')
+export const WEB_DIST_DIR = resolvePath(__dirname, '..', '..', 'web', 'dist')
 
-function serveStaticFromDist(res, absPath) {
+export function serveStaticFromDist(res, absPath) {
   const ext = absPath.slice(absPath.lastIndexOf('.'))
   const ct = MIME_TYPES[ext] || 'application/octet-stream'
   res.writeHead(200, {
@@ -530,7 +530,7 @@ function serveStaticFromDist(res, absPath) {
   res.end(readFileSync(absPath))
 }
 
-function serveSpaIndex(res) {
+export function serveSpaIndex(res) {
   const indexPath = resolvePath(WEB_DIST_DIR, 'index.html')
   if (!existsSync(indexPath)) {
     res.writeHead(503, { 'Content-Type': 'text/plain' })
@@ -545,7 +545,7 @@ function serveSpaIndex(res) {
   res.end(readFileSync(indexPath))
 }
 
-function serveWebStaticFile(res, pathname, requestId) {
+export function serveWebStaticFile(res, pathname, requestId) {
   // 📖 Resolve to an absolute path and verify it stays inside WEB_DIST_DIR.
   // 📖 Without this, `pathname` like `/../../etc/passwd` escapes the dist root.
   const requested = pathname === '/' ? 'index.html' : pathname.replace(/^\/+/, '')
@@ -582,7 +582,7 @@ function serveWebStaticFile(res, pathname, requestId) {
   serveStaticFromDist(res, candidate)
 }
 
-function buildUpstreamMeta(response, text = '', providerKey = '') {
+export function buildUpstreamMeta(response, text = '', providerKey = '') {
   // 📖 Keep quota diagnostics structural only: headers and retry timing are safe,
   // 📖 while upstream response bodies stay out of logs and telemetry.
   const rateLimitHeaders = extractRateLimitHeaders(response.headers)
@@ -602,7 +602,7 @@ function buildUpstreamMeta(response, text = '', providerKey = '') {
   }
 }
 
-function attachClientAbort(req, res, controller) {
+export function attachClientAbort(req, res, controller) {
   let clientAborted = false
   const abort = () => {
     if (res.writableEnded) return
@@ -651,23 +651,23 @@ export function cloneHeadersForUpstream(reqHeaders, apiKey, providerKey) {
   return headers
 }
 
-function getApiModelId(providerKey, modelId) {
+export function getApiModelId(providerKey, modelId) {
   return providerKey === 'zai' ? modelId.replace(/^zai\//, '') : modelId
 }
 
-function resolveProviderUrl(providerKey) {
+export function resolveProviderUrl(providerKey) {
   const url = sources[providerKey]?.url
   if (!url) return null
   return providerKey === 'cloudflare' ? resolveCloudflareUrl(url) : url
 }
 
-function buildProviderModelsUrl(providerKey) {
+export function buildProviderModelsUrl(providerKey) {
   const url = resolveProviderUrl(providerKey)
   if (typeof url !== 'string' || !url.includes('/chat/completions')) return null
   return url.replace(/\/chat\/completions$/, '/models')
 }
 
-function extractUsage(payload) {
+export function extractUsage(payload) {
   const usage = payload?.usage
   if (!usage || typeof usage !== 'object') return null
   const promptTokens = Number(usage.prompt_tokens ?? 0)
@@ -694,7 +694,7 @@ export function formatOpenAiError(message, type, code, requestId, extra = {}) {
   }
 }
 
-function sendJson(res, statusCode, payload, headers = {}) {
+export function sendJson(res, statusCode, payload, headers = {}) {
   if (res.writableEnded) return
   const body = JSON.stringify(payload)
   res.writeHead(statusCode, {
@@ -705,11 +705,11 @@ function sendJson(res, statusCode, payload, headers = {}) {
   res.end(body)
 }
 
-function sendError(res, statusCode, message, type, code, requestId, extra = {}) {
+export function sendError(res, statusCode, message, type, code, requestId, extra = {}) {
   sendJson(res, statusCode, formatOpenAiError(message, type, code, requestId, extra))
 }
 
-function readRequestBody(req, limit = MAX_BODY_BYTES) {
+export function readRequestBody(req, limit = MAX_BODY_BYTES) {
   return new Promise((resolve, reject) => {
     let size = 0
     const chunks = []
@@ -727,7 +727,7 @@ function readRequestBody(req, limit = MAX_BODY_BYTES) {
   })
 }
 
-function readJsonBody(req) {
+export function readJsonBody(req) {
   return readRequestBody(req).then((raw) => {
     // 📖 Refuse explicit non-JSON bodies (e.g. text/plain form posts) so a
     // 📖 cross-site form cannot smuggle data into JSON endpoints. Missing or
@@ -794,7 +794,7 @@ export function applyPrePromptToBody(body, prePrompt) {
   return { ...safeBody, messages }
 }
 
-class RouterLogger {
+export class RouterLogger {
   constructor(logPath, level = 'info') {
     this.logPath = logPath
     this.level = level
@@ -844,7 +844,7 @@ class RouterLogger {
   debug(message, meta = null) { this.write('debug', message, meta) }
 }
 
-class TokenTracker {
+export class TokenTracker {
   constructor(path, logger) {
     this.path = path
     this.logger = logger
@@ -3587,7 +3587,7 @@ class RouterRuntime {
 // 📖 Pinned picks: only used as a *tie-breaker* when multiple models have
 // 📖 identical (tier, sweScore, latency) - never a hard requirement, so
 // 📖 a user whose NVIDIA key is dead still gets a working set.
-const PREFERRED_DEFAULT_MODELS = [
+export const PREFERRED_DEFAULT_MODELS = [
   { provider: 'groq',     model: 'openai/gpt-oss-120b' },
   { provider: 'groq',     model: 'qwen/qwen3.6-27b' },
   { provider: 'cerebras', model: 'llama3.1-70b' },
@@ -3792,7 +3792,7 @@ export function createRouterRuntimeForTest({ config, port = 0, logger = null, to
  *
  * @returns {(entry: { provider: string, model: string }) => Promise<{ ok: boolean, code: string|number, latencyMs: number }>}
  */
-function createDefaultProbeFn(apiKeys) {
+export function createDefaultProbeFn(apiKeys) {
   return async (entry) => {
     const { provider, model } = entry
     if (!isRouteableProvider(provider, sources)) return { ok: false, code: 'NOT_ROUTEABLE', latencyMs: 0 }
@@ -3839,7 +3839,7 @@ function createDefaultProbeFn(apiKeys) {
   }
 }
 
-function buildDefaultRouterSetSync(config = {}, maxModels = 5) {
+export function buildDefaultRouterSetSync(config = {}, maxModels = 5) {
   // 📖 Synchronous fallback used when async probing isn't available (e.g.
   // 📖 routerConfig() getter, which is on the hot path). Falls back to the
   // 📖 static tier-based ordering. The async probed version is the one
@@ -3882,7 +3882,7 @@ function buildDefaultRouterSetSync(config = {}, maxModels = 5) {
   }
 }
 
-async function ensureRouterConfigForDaemon(config, skipSave = false) {
+export async function ensureRouterConfigForDaemon(config, skipSave = false) {
   // 📖 Preserve existing named sets (e.g., created by sync-set) to avoid overwriting
   // 📖 user-created configurations. Only rebuild from favorites/defaults when no
   // 📖 sets exist at all (fresh install).
@@ -3924,7 +3924,7 @@ async function ensureRouterConfigForDaemon(config, skipSave = false) {
  * 📖 Each favorite "providerKey/modelId" is resolved to its source model entry.
  * 📖 Falls back to buildDefaultRouterSet if no favorites exist.
  */
-function buildRouterSetFromFavorites(config) {
+export function buildRouterSetFromFavorites(config) {
   const favorites = config.favorites
   if (!Array.isArray(favorites) || favorites.length === 0) return null
   const models = []
@@ -3952,7 +3952,7 @@ function buildRouterSetFromFavorites(config) {
   }
 }
 
-function listenOnPort(server, port, host = '127.0.0.1') {
+export function listenOnPort(server, port, host = '127.0.0.1') {
   return new Promise((resolve, reject) => {
     const onError = (error) => {
       server.off('error', onError)
@@ -3968,7 +3968,7 @@ function listenOnPort(server, port, host = '127.0.0.1') {
   })
 }
 
-async function listenWithFallback(server, preferredPort, logger, host = '127.0.0.1') {
+export async function listenWithFallback(server, preferredPort, logger, host = '127.0.0.1') {
   const { defaultPort, maxPort } = getRouterPortRange()
   const start = Math.max(1, preferredPort || defaultPort)
   const candidates = []
@@ -4125,7 +4125,7 @@ export async function startRouterDaemonBackground() {
 // 📖 Best-effort process command lookup used to verify a PID file before
 // 📖 signalling. Returns null when `ps` is unavailable (e.g. Windows) so the
 // 📖 caller can keep the previous behavior instead of failing hard.
-function getProcessCommand(pid) {
+export function getProcessCommand(pid) {
   try {
     return execFileSync('ps', ['-p', String(pid), '-o', 'command='], { encoding: 'utf8' }).trim()
   } catch {

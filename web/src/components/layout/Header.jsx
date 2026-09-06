@@ -24,6 +24,7 @@ import styles from './Header.module.css'
 const NAV_ITEMS = [
   { id: 'dashboard',         label: 'Dashboard',          icon: IconLayoutDashboard },
   { id: 'router',            label: 'Router',             icon: IconRoute },
+  { id: 'router-v2',         label: 'Router v2',          icon: IconRoute, beta: true },
   { id: 'playground',        label: 'Playground',         icon: IconMessageChatbot },
   { id: 'help',              label: 'Help',               icon: IconQuestionMark },
   { id: 'install-endpoints', label: 'Install Endpoints',  icon: IconPlug },
@@ -125,6 +126,7 @@ export default function Header({
                 >
                   <Icon size={16} stroke={1.5} />
                   <span>{item.label}</span>
+                  {item.beta && <span className={styles.betaBadge}>BETA</span>}
                 </button>
               )
             })}
@@ -161,6 +163,7 @@ export default function Header({
               >
                 <Icon size={14} stroke={1.5} />
                 <span>{item.label}</span>
+                {item.beta && <span className={styles.betaBadge}>BETA</span>}
                 {item.comingIn && <span className={styles.comingBadge}>{item.comingIn}</span>}
               </button>
             )
