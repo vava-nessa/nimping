@@ -39,6 +39,7 @@ import {
   TIER_ORDER, VERDICT_ORDER, TIER_LETTER_MAP,
   scoreModelForTask, getTopRecommendations, TASK_TYPES, PRIORITY_TYPES, CONTEXT_BUDGETS,
   formatCtxWindow, labelFromId, resolveSecurityAction,
+  parseIcaclsOutput, shouldSkipSecurityWarn,
   formatResultsAsJSON,
   detectTerminalCapabilities,
   isProbeFailedRow, selectProbeFailedRows, PROBE_FAILED_STATUSES
@@ -2344,6 +2345,133 @@ describe('security permission formatting (issue #173)', () => {
     assert.equal(formatModeRwx(0o666), 'rw- / rw- / rw-')
     assert.equal(formatModeRwx(0o755), 'rwx / r-x / r-x')
     assert.equal(formatModeRwx(0o000), '--- / --- / ---')
+  })
+})
+
+describe('parseIcaclsOutput (issue #173 Windows follow-up)', () => {
+  // 📖 Sample of a fresh (unfixed) file: inheritance still enabled, every ACE
+  // 📖 carries the (I) flag. This is what rutexd saw: mode 666 forever.
+  const inheritedOutput = [
+    'C:\\Users\\rutex\\.free-coding-models.json NT AUTHORITY\\SYSTEM:(I)(F)',
+    '                                          BUILTIN\\Administrators:(I)(F)',
+    '                                          DESKTOP-XYZ\\rutex:(I)(F)',
+    '',
+    'Successfully processed 1 files; Failed processing 0 files',
+  ].join('\n')
+
+  // 📖 Sample after our fix: /inheritance:r + /grant:r rutex:F leaves one ACE.
+  const fixedOutput = [
+    'C:\\Users\\rutex\\.free-coding-models.json DESKTOP-XYZ\\rutex:(F)',
+    '',
+    'Successfully processed 1 files; Failed processing 0 files',
+  ].join('\n')
+
+  it('flags inheritance as enabled when ACEs carry the (I) marker', () => {
+    const parsed = parseIcaclsOutput({ output: inheritedOutput, userName: 'rutex' })
+    assert.equal(parsed.inheritanceEnabled, true)
+    assert.equal(parsed.othersHaveAccess, false, 'SYSTEM/Administrators/current user are whitelisted')
+    assert.equal(parsed.ownerHasAccess, true)
+  })
+
+  it('calls a fixed ACL secure on every axis', () => {
+    const parsed = parseIcaclsOutput({ output: fixedOutput, userName: 'rutex' })
+    assert.equal(parsed.inheritanceEnabled, false)
+    assert.equal(parsed.othersHaveAccess, false)
+    assert.equal(parsed.ownerHasAccess, true)
+  })
+
+  it('treats grants to other principals as insecure', () => {
+    const output = [
+      'C:\\file.json Everyone:(F)',
+      '              DESKTOP-XYZ\\rutex:(F)',
+    ].join('\n')
+    const parsed = parseIcaclsOutput({ output, userName: 'rutex' })
+    assert.equal(parsed.othersHaveAccess, true)
+    assert.deepEqual(parsed.otherNames, ['Everyone'])
+  })
+
+  it('strips the echoed path from the first ACE line when filePath is given', () => {
+    const configPath = 'C:\\Users\\rutex\\.free-coding-models.json'
+    const output = [
+      `${configPath} NT AUTHORITY\\Authenticated Users:(I)(R)`,
+      '             DESKTOP-XYZ\\rutex:(I)(F)',
+      '',
+      'Successfully processed 2 files; Failed processing 0 files',
+    ].join('\n')
+    const parsed = parseIcaclsOutput({ output, userName: 'rutex', filePath: configPath })
+    assert.equal(parsed.inheritanceEnabled, true)
+    assert.equal(parsed.othersHaveAccess, true, 'Authenticated Users is not a trusted principal')
+    assert.equal(parsed.ownerHasAccess, true)
+    assert.deepEqual(parsed.otherNames, ['NT AUTHORITY\\Authenticated Users'])
+  })
+
+  it('matches the current user case-insensitively and domain-qualified', () => {
+    const output = 'C:\\file.json MACHINE\\RuTeX:(F)'
+    const parsed = parseIcaclsOutput({ output, userName: 'rutex' })
+    assert.equal(parsed.ownerHasAccess, true)
+    assert.equal(parsed.othersHaveAccess, false)
+  })
+
+  it('whitelists SYSTEM and Administrators via names and well-known SIDs', () => {
+    const output = [
+      'C:\\file.json S-1-5-18:(F)',
+      '             S-1-5-32-544:(F)',
+      '             DESKTOP-XYZ\\rutex:(F)',
+    ].join('\n')
+    const parsed = parseIcaclsOutput({ output, userName: 'rutex' })
+    assert.equal(parsed.othersHaveAccess, false)
+    assert.equal(parsed.ownerHasAccess, true)
+  })
+
+  it('reports insecure when the owner has no grant at all', () => {
+    const output = 'C:\\file.json BUILTIN\\Administrators:(F)'
+    const parsed = parseIcaclsOutput({ output, userName: 'rutex' })
+    assert.equal(parsed.ownerHasAccess, false)
+    assert.equal(parsed.inheritanceEnabled, false)
+  })
+
+  it('returns empty grants for unparseable output', () => {
+    const parsed = parseIcaclsOutput({ output: 'garbage', userName: 'rutex' })
+    assert.deepEqual(parsed.grants, [])
+    assert.equal(parsed.inheritanceEnabled, false)
+    assert.equal(parsed.othersHaveAccess, false)
+    assert.equal(parsed.ownerHasAccess, false)
+  })
+})
+
+describe('shouldSkipSecurityWarn (issue #173 anti-nag)', () => {
+  const now = Date.parse('2026-09-06T12:00:00Z')
+
+  it('never skips without a previous ack', () => {
+    assert.equal(shouldSkipSecurityWarn({ ackedAt: null, now }), false)
+    assert.equal(shouldSkipSecurityWarn({ ackedAt: undefined, now }), false)
+    assert.equal(shouldSkipSecurityWarn({ ackedAt: '', now }), false)
+  })
+
+  it('skips while the quiet window (30 days) is still running', () => {
+    const fiveDaysAgo = Date.parse('2026-09-01T12:00:00Z')
+    assert.equal(shouldSkipSecurityWarn({ ackedAt: fiveDaysAgo, now }), true)
+  })
+
+  it('warns again once the quiet window has elapsed', () => {
+    const fortyDaysAgo = Date.parse('2026-07-27T12:00:00Z')
+    assert.equal(shouldSkipSecurityWarn({ ackedAt: fortyDaysAgo, now }), false)
+  })
+
+  it('accepts ISO strings and rejects garbage timestamps', () => {
+    assert.equal(shouldSkipSecurityWarn({ ackedAt: '2026-09-01T12:00:00Z', now }), true)
+    assert.equal(shouldSkipSecurityWarn({ ackedAt: 'not-a-date', now }), false)
+  })
+
+  it('never skips a clock-skewed future ack', () => {
+    const tomorrow = Date.parse('2026-09-07T12:00:00Z')
+    assert.equal(shouldSkipSecurityWarn({ ackedAt: tomorrow, now }), false)
+  })
+
+  it('honours a custom interval', () => {
+    const tenDaysAgo = Date.parse('2026-08-27T12:00:00Z')
+    assert.equal(shouldSkipSecurityWarn({ ackedAt: tenDaysAgo, now, intervalDays: 30 }), true)
+    assert.equal(shouldSkipSecurityWarn({ ackedAt: tenDaysAgo, now, intervalDays: 7 }), false)
   })
 })
 

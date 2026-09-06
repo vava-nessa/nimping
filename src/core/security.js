@@ -17,21 +17,34 @@
  *    Now checkConfigSecurity() is async, awaited by the bin entry BEFORE the TUI
  *    starts, and it never prompts on non-TTY stdin or daemon/web/JSON surfaces.
  *
- * 📖 Secure permissions:
- *    - 0o600 (octal 600) = user:rw, group:---, world:---
- *    - Only the file owner can read or write
- *    - This is the standard for files containing secrets (SSH keys, API keys, etc.)
+ * 📖 Issue #173 follow-up (rutexd): on Windows the "fix" never persisted and the
+ *    warning re-fired on every launch. Root cause: Node maps win32 modes to only
+ *    0666 (writable) or 0444 (read-only), so 0600 is unreachable and
+ *    `(mode & 0o777) === 0o600` was always false; chmod 600 on win32 just clears
+ *    the read-only bit. The real fix:
+ *    - the Windows verdict now comes from the NTFS ACL via `icacls <file>`
+ *    - fixing on Windows runs `icacls /inheritance:r /grant:r <user>:F` and is
+ *      verified by re-reading the ACL before claiming success
+ *    - when the fix cannot be applied or verified, an ack marker file
+ *      (<config>.securityack) keeps the warning quiet for 30 days instead of
+ *      nagging on every launch (--fix-permissions bypasses the marker)
+ *    POSIX behaviour (chmod 600) is unchanged on macOS/Linux.
  *
- * 📖 Windows note: Node's chmod on win32 is best-effort (it can only toggle the
- *    read-only attribute, NTFS ACLs still govern real access). We still try,
- *    and the manual hint points at icacls for a real fix.
+ * 📖 Secure permissions:
+ *    - POSIX: 0o600 (octal 600) = user:rw, group:---, world:---
+ *    - Windows: NTFS inheritance disabled, grants only for the current user
+ *      (SYSTEM/Administrators whitelisted) - see parseIcaclsOutput in utils.js
  *
  * @functions
  *   → checkConfigSecurity() - Async main security check; awaited before the TUI starts
  *   → resolveSecurityAction() - Pure gate deciding auto-fix / prompt / warn-only (in utils.js)
+ *   → parseIcaclsOutput() - Pure parser for icacls output (in utils.js)
+ *   → shouldSkipSecurityWarn() - Pure anti-nag gate for repeat warnings (in utils.js)
  *   → getConfigPermissions() - Returns file mode object for config
- *   → isConfigSecure() - Boolean check if permissions are correct
- *   → fixConfigPermissions() - Applies chmod 600 to config file (best-effort on Windows)
+ *   → isConfigSecure() - Boolean check if permissions are correct (POSIX modes)
+ *   → fixConfigPermissions() - Applies chmod 600 to config file (POSIX)
+ *   → getWindowsAclStatus() - Async icacls read + parse → is the ACL secure?
+ *   → fixWindowsAcl() - Async icacls fix + ACL re-verify
  *   → promptSecurityFix() - Interactive prompt asking user to fix permissions
  *
  * @exports checkConfigSecurity, isConfigSecure, fixConfigPermissions, formatMode, formatModeRwx
@@ -41,8 +54,12 @@ import fs from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
 import readline from 'node:readline'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import { CONFIG_PATH } from './config.js'
-import { resolveSecurityAction } from './utils.js'
+import { resolveSecurityAction, parseIcaclsOutput, shouldSkipSecurityWarn } from './utils.js'
+
+const execFileAsync = promisify(execFile)
 
 // 📖 Config file path - matches the path used in config.js (honours the
 // 📖 --config-dir / FCM_CONFIG_DIR override when set).
@@ -91,7 +108,8 @@ export function isConfigSecure() {
 }
 
 // 📖 Fix config file permissions to secure mode (chmod 600)
-// 📖 Best-effort on Windows (read-only bit); returns true if successful, false otherwise
+// 📖 POSIX path; on Windows this is NOT the real fix (see fixWindowsAcl) and is
+// 📖 kept only as a harmless last-ditch fallback. Returns true if successful.
 export function fixConfigPermissions() {
   const configPath = getConfigPath()
 
@@ -104,6 +122,88 @@ export function fixConfigPermissions() {
     return true
   } catch (err) {
     return false
+  }
+}
+
+// 📖 Current Windows user name, used both for icacls grants and for matching
+// 📖 ACE lines when parsing the ACL (os.userInfo works on win32 too).
+function getWindowsUserName() {
+  try {
+    return os.userInfo().username
+  } catch {
+    return process.env.USERNAME || ''
+  }
+}
+
+// 📖 Read the real NTFS ACL via icacls and decide if it is secure:
+// 📖 inheritance disabled + grants only for the current user (and trusted
+// 📖 SYSTEM/Administrators entries). Returns { checked, secure, ...parsed };
+// 📖 checked=false when icacls is missing or failed (caller falls back to the
+// 📖 ack-gated warning path instead of trusting useless mode bits).
+async function getWindowsAclStatus(configPath) {
+  try {
+    const { stdout } = await execFileAsync('icacls', [configPath], {
+      timeout: 5000,
+      windowsHide: true,
+    })
+    const parsed = parseIcaclsOutput({ output: stdout, userName: getWindowsUserName(), filePath: configPath })
+    const secure = !parsed.inheritanceEnabled && !parsed.othersHaveAccess && parsed.ownerHasAccess
+    return { checked: true, secure, ...parsed }
+  } catch (err) {
+    return { checked: false, secure: false, grants: [], otherNames: [] }
+  }
+}
+
+// 📖 Fix the NTFS ACL for real: drop inherited ACEs, grant only the current
+// 📖 user full control, then VERIFY by re-reading the ACL (never claim success
+// 📖 without proof - that lie was the core of the issue #173 follow-up).
+// 📖 execFile (no shell) keeps the path injection-safe even with spaces.
+async function fixWindowsAcl(configPath) {
+  const userName = getWindowsUserName()
+  if (!userName) return false
+
+  try {
+    await execFileAsync(
+      'icacls',
+      [configPath, '/inheritance:r', '/grant:r', `${userName}:F`],
+      { timeout: 5000, windowsHide: true }
+    )
+    const status = await getWindowsAclStatus(configPath)
+    return status.checked && status.secure
+  } catch (err) {
+    return false
+  }
+}
+
+// 📖 Anti-nag marker: written when we warned but could not fix/verify, so the
+// 📖 same warning does not re-fire on every launch (see shouldSkipSecurityWarn).
+// 📖 Lives next to the config so --config-dir / FCM_CONFIG_DIR stays coherent.
+function getAckPath() {
+  return `${getConfigPath()}.securityack`
+}
+
+function readSecurityAck() {
+  try {
+    return fs.readFileSync(getAckPath(), 'utf8').trim()
+  } catch {
+    return null
+  }
+}
+
+function writeSecurityAck() {
+  try {
+    fs.writeFileSync(getAckPath(), new Date().toISOString(), { mode: 0o600 })
+    return true
+  } catch {
+    return false
+  }
+}
+
+function clearSecurityAck() {
+  try {
+    fs.unlinkSync(getAckPath())
+  } catch {
+    // 📖 Nothing to clean up is fine.
   }
 }
 
@@ -133,7 +233,9 @@ export function formatModeRwx(mode) {
 }
 
 // 📖 Print the insecure-permissions warning (stderr, so --json stdout stays clean)
-function printSecurityWarning(perms) {
+// 📖 On Windows, mode bits are meaningless (always 0666/0444), so when the ACL
+// 📖 was read we show WHAT actually grants access instead of a fake octal story.
+function printSecurityWarning(perms, aclStatus = { checked: false }) {
   const currentMode = formatMode(perms.mode)
   const currentRwx = formatModeRwx(perms.mode)
 
@@ -145,16 +247,29 @@ function printSecurityWarning(perms) {
   console.error('')
   console.error('This means other users on this system may be able to read your API keys.')
   console.error('')
-  console.error('Recommended: Fix permissions to 600 (rw-------) - owner read/write only')
+
+  if (aclStatus.checked) {
+    if (aclStatus.inheritanceEnabled) {
+      console.error('NTFS: this file inherits access permissions from your user folder.')
+    }
+    if (aclStatus.othersHaveAccess) {
+      const names = (aclStatus.otherNames || []).slice(0, 3).join(', ')
+      console.error(`NTFS: access is also granted to: ${names}`)
+    }
+    console.error('')
+  }
+
+  console.error('Recommended: restrict access to your user account only')
 }
 
-// 📖 Print the manual fix hint. On Windows, point at icacls since Node's chmod
-// 📖 only toggles the read-only attribute there.
+// 📖 Print the manual fix hint. Platform-matched command: icacls on Windows
+// 📖 (NTFS ACLs), chmod elsewhere.
 function printManualFixHint() {
   console.error('')
   if (IS_WINDOWS) {
+    const user = getWindowsUserName() || '$env:USERNAME'
     console.error('To fix manually (PowerShell), run:')
-    console.error(`  icacls "${getConfigPath()}" /inheritance:r /grant:r "$env:USERNAME:R,W"`)
+    console.error(`  icacls "${getConfigPath()}" /inheritance:r /grant:r "${user}:F"`)
   } else {
     console.error('To fix manually, run:')
     console.error(`  chmod 600 ${getConfigPath()}`)
@@ -164,24 +279,37 @@ function printManualFixHint() {
 
 // 📖 Apply the fix and report the outcome. Shared by the prompt path (user said
 // 📖 yes) and the auto-fix path (--fix-permissions / --yes / -y).
-function applyFixAndReport() {
-  const success = fixConfigPermissions()
+// 📖 Windows: icacls ACL fix, verified by re-reading the ACL.
+// 📖 POSIX: chmod 600, verified by re-statting the file.
+// 📖 If the fix cannot be verified, write the anti-nag ack so the warning does
+// 📖 not re-fire on every launch, and point at the manual command.
+async function applyFixAndReport() {
+  const configPath = getConfigPath()
+  let success = false
+
+  if (IS_WINDOWS) {
+    success = await fixWindowsAcl(configPath)
+  } else {
+    success = fixConfigPermissions() && getConfigPermissions()?.isSecure === true
+  }
 
   if (success) {
+    clearSecurityAck()
     console.error('')
     console.error('✅ Permissions fixed! Your API keys are now secure.')
     console.error('')
     if (IS_WINDOWS) {
-      console.error('Note: on Windows this is best-effort (read-only bit). See docs for NTFS ACLs.')
+      console.error(`NTFS access is now restricted to "${getWindowsUserName()}".`)
       console.error('')
     }
     return { wasSecure: false, wasFixed: true }
   }
 
+  writeSecurityAck()
   console.error('')
   console.error('❌ Failed to fix permissions automatically.')
   printManualFixHint()
-  return { wasSecure: false, wasFixed: false, error: 'chmod_failed' }
+  return { wasSecure: false, wasFixed: false, error: 'fix_failed' }
 }
 
 // 📖 Check security and handle the fix flow if needed
@@ -189,9 +317,14 @@ function applyFixAndReport() {
 // 📖 the confirmation prompt are visible and fully resolved before raw mode /
 // 📖 the alternate screen take over.
 //
+// 📖 Windows verdict (issue #173 follow-up): mode bits on win32 are only ever
+// 📖 0666 or 0444, so the POSIX 0600 check would nag forever. The real verdict
+// 📖 comes from the NTFS ACL (icacls). If icacls is unavailable, fall through to
+// 📖 the warning path but let the anti-nag ack keep it to once per 30 days.
+//
 // 📖 Options:
 //   autoFix       - true when --fix-permissions / --yes / -y was passed: apply the
-//                   fix without asking
+//                   fix without asking (also bypasses the anti-nag ack)
 //   promptAllowed - false on daemon/web/JSON surfaces: never prompt there, at most
 //                   warn on stderr
 //   stdinIsTTY    - override the stdin TTY detection (tests); defaults to real detection
@@ -205,9 +338,21 @@ export async function checkConfigSecurity(options = {}) {
     return { wasSecure: true, wasFixed: false }
   }
 
-  // 📖 Permissions are already secure
-  if (perms.isSecure) {
+  // 📖 Security verdict, platform-aware.
+  let aclStatus = { checked: false, secure: false, grants: [], otherNames: [] }
+  if (IS_WINDOWS) {
+    aclStatus = await getWindowsAclStatus(perms.path)
+    if (aclStatus.checked && aclStatus.secure) {
+      return { wasSecure: true, wasFixed: false }
+    }
+  } else if (perms.isSecure) {
     return { wasSecure: true, wasFixed: false }
+  }
+
+  // 📖 Anti-nag gate: if we already warned recently and the fix did not stick,
+  // 📖 stay quiet instead of nagging on every launch. --fix-permissions bypasses.
+  if (options.autoFix !== true && shouldSkipSecurityWarn({ ackedAt: readSecurityAck() })) {
+    return { wasSecure: false, wasFixed: false, error: 'warned_recently' }
   }
 
   // 📖 Pure gate (see utils.js): decides auto-fix vs prompt vs warn-only.
@@ -225,7 +370,7 @@ export async function checkConfigSecurity(options = {}) {
 
   // 📖 Security issue detected! Print the warning first so it is on screen
   // 📖 no matter which path follows.
-  printSecurityWarning(perms)
+  printSecurityWarning(perms, aclStatus)
 
   if (action === 'auto-fix') {
     return applyFixAndReport()
@@ -234,6 +379,7 @@ export async function checkConfigSecurity(options = {}) {
   if (action === 'warn-only') {
     console.error('Running non-interactively (piped stdin or daemon/web mode), so skipping the prompt.')
     printManualFixHint()
+    writeSecurityAck()
     return { wasSecure: false, wasFixed: false, error: 'non_interactive' }
   }
 

@@ -750,6 +750,103 @@ export function resolveSecurityAction({ configExists, isSecure, autoFixRequested
   return 'prompt'
 }
 
+// 📖 parseIcaclsOutput: PURE parser for Windows `icacls <file>` output, used by
+// 📖 the config security check to get a REAL answer about NTFS access.
+// 📖 WHY: on win32 Node reports POSIX-style modes as 0666 (writable) or 0444
+// 📖 (read-only) only - 0600 is unreachable - so the old `(mode & 0o777) === 0o600`
+// 📖 test was always false and the warning re-fired on every launch (issue #173
+// 📖 follow-up from rutexd). Only the ACL tells the truth on NTFS.
+// 📖
+// 📖 Sample output we must handle (ACEs, one per line, path on the first line):
+//   C:\Users\rutex\.free-coding-models.json NT AUTHORITY\SYSTEM:(I)(F)
+//                                           BUILTIN\Administrators:(I)(F)
+//                                           DESKTOP-XYZ\rutex:(F)
+//   Successfully processed 1 files; Failed processing 0 files
+// 📖 `(I)` marks an inherited ACE, so "inheritance disabled" = no `(I)` anywhere.
+// 📖 Locale-proof whitelists: names are machine-localized, so we whitelist by
+// 📖 substring (SYSTEM, Administra* covers Administrators/Administrateurs) and
+// 📖 by well-known SID (S-1-5-18 = SYSTEM, S-1-5-32-544 = Administrators), plus
+// 📖 the current user (case-insensitive, domain-qualified or bare).
+// 📖
+// 📖 Params:
+//   output   - raw stdout of `icacls <path>` (string)
+//   userName - current user name (string), e.g. "rutex"
+//   filePath - the exact path passed to icacls (optional but STRONGLY
+//              recommended: icacls echoes it on the first line, glued to the
+//              first ACE, and paths/account names can both contain spaces)
+// 📖 Returns { inheritanceEnabled, othersHaveAccess, ownerHasAccess, grants }
+//   grants = [{ name, flags }] for every ACE line; empty when output unparseable.
+export function parseIcaclsOutput({ output, userName, filePath = '' }) {
+  const text = String(output ?? '')
+  const user = String(userName ?? '').trim().toLowerCase()
+  const knownPath = String(filePath ?? '')
+  const lines = text.split(/\r?\n/)
+
+  // 📖 The rights/flags groups always end the line: "(I)(F)", "(F)", "(R,W)"...
+  const aceTail = /((?:\([^)]*\)\s*)+)$/
+  const grants = []
+  for (const rawLine of lines) {
+    const tail = aceTail.exec(rawLine)
+    if (!tail) continue
+
+    let before = rawLine.slice(0, tail.index).trim()
+    if (before === '') continue
+    // 📖 Drop the colon that separates the account name from its flags.
+    before = before.replace(/:$/, '').trim()
+    // 📖 First ACE shares its line with the echoed path: strip the path we
+    // 📖 passed to icacls. Without a known path, keep only the segment after
+    // 📖 the last whitespace (exact for simple names; callers should pass
+    // 📖 filePath when the path or account name contains spaces).
+    if (knownPath && before.startsWith(knownPath)) {
+      before = before.slice(knownPath.length).trim()
+    } else if (knownPath === '' && /\s/.test(before)) {
+      before = before.slice(before.lastIndexOf(' ') + 1).trim()
+    }
+    if (before === '') continue
+    grants.push({ name: before, flags: tail[1].replace(/\s+/g, '') })
+  }
+
+  const isTrusted = (name) => {
+    const n = name.toLowerCase()
+    if (user !== '' && (n === user || n.endsWith('\\' + user))) return true
+    if (n.includes('system') || n.includes('s-1-5-18')) return true
+    if (n.includes('administra') || n.includes('s-1-5-32-544')) return true
+    return false
+  }
+
+  const inheritanceEnabled = grants.some((g) => g.flags.includes('I'))
+  const others = grants.filter((g) => !isTrusted(g.name)).map((g) => g.name)
+  const ownerHasAccess = grants.some((g) => {
+    const n = g.name.toLowerCase()
+    return user !== '' && (n === user || n.endsWith('\\' + user))
+  })
+
+  return {
+    inheritanceEnabled,
+    othersHaveAccess: others.length > 0,
+    ownerHasAccess,
+    grants,
+    otherNames: others,
+  }
+}
+
+// 📖 shouldSkipSecurityWarn: PURE anti-nag gate for the config security warning.
+// 📖 WHY: when the permission fix cannot be applied or verified (rare: icacls
+// 📖 missing on Windows, chmod failing on POSIX), the insecure state persists and
+// 📖 the warning used to re-fire on every single launch. Once we warned and the
+// 📖 fix did not stick, stay quiet for `intervalDays` (default 30) instead of
+// 📖 nagging daily. `--fix-permissions` bypasses the gate in the caller.
+// 📖 Params: ackedAt - last warning timestamp (ms epoch or ISO string or null)
+//           now - current time in ms epoch; intervalDays - quiet window length
+// 📖 Returns true only when ackedAt parses AND is less than intervalDays old.
+export function shouldSkipSecurityWarn({ ackedAt, now = Date.now(), intervalDays = 30 }) {
+  if (ackedAt === null || ackedAt === undefined || ackedAt === '') return false
+  const then = typeof ackedAt === 'number' ? ackedAt : Date.parse(String(ackedAt))
+  if (!Number.isFinite(then)) return false
+  const intervalMs = Math.max(0, intervalDays) * 24 * 60 * 60 * 1000
+  return now - then < intervalMs && now >= then
+}
+
 // 📖 detectTerminalCapabilities: PURE terminal capability probe for TUI overlays.
 // 📖 WHY: basic server consoles (IPMI/KVM viewers, ASPEED framebuffer, serial
 // 📖 terminals) often run 80x24 or smaller with no or limited color support, and
