@@ -82,27 +82,44 @@ function stripUnsupportedParams(body) {
 // 📖 requires a `tool` role message to be the result of a specific assistant
 // 📖 tool call — but some clients (ZCode, Claude Code) drop the assistant
 // 📖 tool_calls entry while keeping the tool result, which GLM rejects with 422.
+//
+// 📖 The matching window is the assistant message's WHOLE tool_calls batch:
+// 📖 an assistant turn that fired N parallel tool calls is followed by N tool
+// 📖 result messages, and only the first one has the assistant as its direct
+// 📖 predecessor. Matching against a pending-id set (instead of the immediate
+// 📖 previous message) keeps results 2..N, which used to be dropped as
+// 📖 "orphans" and made providers reject the truncated conversation with 400.
 function dropOrphanToolMessages(body) {
   if (!Array.isArray(body.messages)) return body
   const filtered = []
+  let pendingToolCallIds = new Set()
   for (const msg of body.messages) {
     if (!msg || typeof msg !== 'object') continue
+    if (msg.role === 'assistant') {
+      filtered.push(msg)
+      pendingToolCallIds = new Set(
+        Array.isArray(msg.tool_calls)
+          ? msg.tool_calls.map((tc) => (tc && typeof tc.id === 'string' ? tc.id : null)).filter(Boolean)
+          : [],
+      )
+      continue
+    }
     if (msg.role === 'tool') {
       const toolCallId = msg.tool_call_id
       if (typeof toolCallId !== 'string' || toolCallId.length === 0) {
         // 📖 tool message without a tool_call_id is fundamentally invalid
         continue
       }
-      const prev = filtered[filtered.length - 1]
-      const hasMatch = prev
-        && prev.role === 'assistant'
-        && Array.isArray(prev.tool_calls)
-        && prev.tool_calls.some((tc) => tc && tc.id === toolCallId)
-      if (!hasMatch) {
+      if (!pendingToolCallIds.has(toolCallId)) {
         // 📖 Skip the orphan — better to drop than to 422
         continue
       }
+      pendingToolCallIds.delete(toolCallId)
+      filtered.push(msg)
+      continue
     }
+    // 📖 A user or system message closes the pending tool-call window.
+    pendingToolCallIds = new Set()
     filtered.push(msg)
   }
   // 📖 If filtering changed anything, materialize a new body object

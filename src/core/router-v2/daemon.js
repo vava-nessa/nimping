@@ -104,7 +104,6 @@ import {
   buildDefaultRouterSet,
   buildDefaultRouterSetSync,
   buildRouterSetFromFavorites,
-  ensureRouterConfigForDaemon,
   getProcessCommand,
   listenWithFallback,
   applyPrePromptToBody,
@@ -385,7 +384,12 @@ class RouterV2Runtime {
   reloadConfigFromDisk() {
     try {
       const nextConfig = loadConfig()
-      void ensureRouterConfigForDaemon(nextConfig, true)
+      // 📖 v1's reload runs ensureRouterConfigForDaemon, which REBUILDS the
+      // router section from DEFAULT_ROUTER_SETTINGS and silently discards any
+      // user failover tuning on every 10s tick (requestTimeoutMs, stalls,
+      // v2-only fields like contentValidation). v2 just reads the file raw:
+      // routerConfig() normalizes on read and defaults cover missing fields,
+      // so user settings survive reloads.
       this.config = nextConfig
       this.refreshRouteState()
       this.scheduleProbeLoop()
@@ -2169,8 +2173,9 @@ export async function runRouterV2Daemon() {
           runtime.refreshRouteState()
         }
       } else {
-        const fresh = loadConfig()
-        await ensureRouterConfigForDaemon(fresh, true)
+        // 📖 A usable set already exists (user's favorites or a previous run):
+        // just adopt the fresh file as-is. Running ensure here would rebuild
+        // the router section from defaults and wipe failover tuning.
         runtime.config = fresh
         runtime.refreshRouteState()
       }

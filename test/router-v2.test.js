@@ -916,3 +916,44 @@ describe('request history', () => {
     }
   })
 })
+
+describe('schema normalizer: parallel tool results (router v2 E2E fix)', () => {
+  it('keeps EVERY tool result of a multi-tool-call assistant turn, not just the first', async () => {
+    const { normalizeRequestBody } = await import('../src/core/schema-normalizer.js')
+    const body = {
+      model: 'fcm',
+      messages: [
+        { role: 'user', content: 'write 3 files' },
+        {
+          role: 'assistant',
+          content: null,
+          tool_calls: [
+            { id: 'call_a', type: 'function', function: { name: 'write', arguments: '{}' } },
+            { id: 'call_b', type: 'function', function: { name: 'write', arguments: '{}' } },
+            { id: 'call_c', type: 'function', function: { name: 'write', arguments: '{}' } },
+          ],
+        },
+        { role: 'tool', tool_call_id: 'call_a', content: 'Wrote file successfully.' },
+        { role: 'tool', tool_call_id: 'call_b', content: 'Wrote file successfully.' },
+        { role: 'tool', tool_call_id: 'call_c', content: 'Wrote file successfully.' },
+        { role: 'user', content: 'continue' },
+      ],
+    }
+    const normalized = normalizeRequestBody(body, 'codestral')
+    const toolMsgs = normalized.messages.filter((m) => m.role === 'tool')
+    assert.equal(toolMsgs.length, 3, 'all 3 parallel tool results must survive')
+  })
+
+  it('still drops genuinely orphaned tool results', async () => {
+    const { normalizeRequestBody } = await import('../src/core/schema-normalizer.js')
+    const body = {
+      model: 'fcm',
+      messages: [
+        { role: 'user', content: 'hi' },
+        { role: 'tool', tool_call_id: 'missing_id', content: 'orphan' },
+      ],
+    }
+    const normalized = normalizeRequestBody(body, 'codestral')
+    assert.equal(normalized.messages.filter((m) => m.role === 'tool').length, 0)
+  })
+})
