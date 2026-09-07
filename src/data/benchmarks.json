@@ -1,7 +1,7 @@
 {
   "_meta": {
     "schemaVersion": 1,
-    "lastUpdated": "2026-09-05",
+    "lastUpdated": "2026-09-07",
     "source": "models.dev (auto) + curated (manual)",
     "notes": "Curated seed dataset for ~30 well-known models. Refreshed by scripts/update-benchmarks.mjs before each release. Fields with null are not yet measured."
   },
