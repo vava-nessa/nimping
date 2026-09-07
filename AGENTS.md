@@ -346,13 +346,12 @@ After every successful `bump` (npm publish verified + `free-coding-models --help
 **Structure to propose (copy-paste ready):**
 
 ```
-free-coding-models vX.Y.Z is live!
+<human hook: 1-2 sentences in your own voice, why this release exists or what annoyed you>
 
-what's new ?
-- 🛠️ emoji short feature (1 line)
-- ⚡ emoji short feature
-- 🐛 emoji short fix
-- 📦 emoji deps/docs
+free-coding-models vX.Y.Z is out. What it means for you:
+- <concrete user benefit 1>
+- <concrete user benefit 2>
+- <bonus features/features list, 1 line>
 
 📦 github: https://github.com/vava-nessa/free-coding-models
 📦 npm: https://www.npmjs.com/package/free-coding-models
@@ -361,9 +360,10 @@ what's new ?
 ```
 
 **Rules:**
-- First line is exactly `free-coding-models vX.Y.Z is live!` : no joke, no hook phrase, no star count.
-- Then `what's new ?` followed by 3 to 6 items max, each 1 line, each starts with a distinct emoji, plain language, no jargon.
-- Links go at the bottom, after the list: repo link then npm link, each prefixed with 📦.
+- Open with a HUMAN hook: 1-2 sentences in your own voice (a frustration, a story, why this release exists). No standardized formula, no star count. It should read like a person, not a changelog.
+- Then one line: `free-coding-models vX.Y.Z is out. What it means for you:` followed by 2 lines max of concrete user benefits (the "2/2" pitch: what it actually changes for the person reading).
+- Then an optional single "also in" line for the remaining features (emoji bullets welcome but not mandatory).
+- Links go at the bottom, after everything: repo link then npm link, each prefixed with 📦.
 - Hashtag block is fixed: `#AI #Coding #OpenSource #VibeCoding #FreeLLM #freeai #codingmodels #freecodingmodels #pi #codex #claudecode`.
 - Keep total tweet under ~600 chars so it fits in one X post with line breaks. No em dash "-" ever.
 - Propose it automatically, don't wait for vava to ask. Show it in a code block ready to copy.
