@@ -236,7 +236,7 @@ async function withMockProvider(responder, fn) {
       res.end(response.rawBody)
       return
     }
-    res.end(JSON.stringify(response.body ?? { id: 'chatcmpl-test', choices: [] }))
+    res.end(JSON.stringify(response.body ?? { id: 'chatcmpl-test', choices: [{ message: { role: 'assistant', content: 'ok' } }] }))
   })
   const port = await listenOnRandomPort(server)
   try {
@@ -325,7 +325,7 @@ describe('buildPingRequest', () => {
           headers: { 'content-type': 'application/json' },
         })
       }
-      return new Response(JSON.stringify({ id: 'chatcmpl-test', choices: [] }), {
+      return new Response(JSON.stringify({ id: 'chatcmpl-test', choices: [{ message: { role: 'assistant', content: 'ok' } }] }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
       })
@@ -3310,7 +3310,7 @@ describe('router daemon integration hardening', () => {
 
   it('fails over non-streaming retryable provider errors to the next model', async () => {
     await withMockProvider(() => ({ status: 503, body: { error: { message: 'maintenance' } } }), async (groqProvider) => {
-      await withMockProvider(() => ({ body: { id: 'chatcmpl-failover', choices: [] } }), async (nvidiaProvider) => {
+      await withMockProvider(() => ({ body: { id: 'chatcmpl-failover', choices: [{ message: { role: 'assistant', content: 'ok' } }] } }), async (nvidiaProvider) => {
         await withSourceUrls({ groq: groqProvider.url, nvidia: nvidiaProvider.url }, async () => {
           const config = buildRouterTestConfig([
             { provider: 'groq', model: ROUTER_TEST_MODELS.groqFast, priority: 1 },
@@ -3333,7 +3333,7 @@ describe('router daemon integration hardening', () => {
 
   it('fails over non-streaming HTTP 529 (overloaded) to the next model (issue #148)', async () => {
     await withMockProvider(() => ({ status: 529, body: { error: { message: 'overloaded' } } }), async (groqProvider) => {
-      await withMockProvider(() => ({ body: { id: 'chatcmpl-failover-529', choices: [] } }), async (nvidiaProvider) => {
+      await withMockProvider(() => ({ body: { id: 'chatcmpl-failover-529', choices: [{ message: { role: 'assistant', content: 'ok' } }] } }), async (nvidiaProvider) => {
         await withSourceUrls({ groq: groqProvider.url, nvidia: nvidiaProvider.url }, async () => {
           const config = buildRouterTestConfig([
             { provider: 'groq', model: ROUTER_TEST_MODELS.groqFast, priority: 1 },
@@ -3362,8 +3362,8 @@ describe('router daemon integration hardening', () => {
   // catalog (deprecated 2026-09-02, audit 2026-09-05).
   it('prefers a same-family model on another provider over the next set entry (t8)', async () => {
     await withMockProvider(() => ({ status: 503, body: { error: { message: 'maintenance' } } }), async (nvidiaProvider) => {
-      await withMockProvider(() => ({ body: { id: 'should-not-serve-qwen', choices: [] } }), async (groqProvider) => {
-        await withMockProvider(() => ({ body: { id: 'chatcmpl-family-hop', choices: [] } }), async (cerebrasProvider) => {
+      await withMockProvider(() => ({ body: { id: 'should-not-serve-qwen', choices: [{ message: { role: 'assistant', content: 'ok' } }] } }), async (groqProvider) => {
+        await withMockProvider(() => ({ body: { id: 'chatcmpl-family-hop', choices: [{ message: { role: 'assistant', content: 'ok' } }] } }), async (cerebrasProvider) => {
           await withSourceUrls({ nvidia: nvidiaProvider.url, groq: groqProvider.url, cerebras: cerebrasProvider.url }, async () => {
             const config = buildRouterTestConfig([
               { provider: 'nvidia', model: 'openai/gpt-oss-20b', priority: 1 },
@@ -3397,8 +3397,8 @@ describe('router daemon integration hardening', () => {
   // set-order failover exactly (Qwen on groq is priority 2 and gets served).
   it('keeps plain set-order failover when familyFailover is disabled (t8)', async () => {
     await withMockProvider(() => ({ status: 503, body: { error: { message: 'maintenance' } } }), async (nvidiaProvider) => {
-      await withMockProvider(() => ({ body: { id: 'chatcmpl-set-order', choices: [] } }), async (groqProvider) => {
-        await withMockProvider(() => ({ body: { id: 'should-not-serve-cerebras', choices: [] } }), async (cerebrasProvider) => {
+      await withMockProvider(() => ({ body: { id: 'chatcmpl-set-order', choices: [{ message: { role: 'assistant', content: 'ok' } }] } }), async (groqProvider) => {
+        await withMockProvider(() => ({ body: { id: 'should-not-serve-cerebras', choices: [{ message: { role: 'assistant', content: 'ok' } }] } }), async (cerebrasProvider) => {
           await withSourceUrls({ nvidia: nvidiaProvider.url, groq: groqProvider.url, cerebras: cerebrasProvider.url }, async () => {
             const config = buildRouterTestConfig([
               { provider: 'nvidia', model: 'openai/gpt-oss-20b', priority: 1 },
@@ -3487,7 +3487,7 @@ describe('router daemon integration hardening', () => {
       setTimeout(() => res.destroy(new Error('upstream stream exploded')), 5)
       return null
     }, async (groqProvider) => {
-      await withMockProvider(() => ({ body: { id: 'should-not-run', choices: [] } }), async (nvidiaProvider) => {
+      await withMockProvider(() => ({ body: { id: 'should-not-run', choices: [{ message: { role: 'assistant', content: 'ok' } }] } }), async (nvidiaProvider) => {
         await withSourceUrls({ groq: groqProvider.url, nvidia: nvidiaProvider.url }, async () => {
           const config = buildRouterTestConfig([
             { provider: 'groq', model: ROUTER_TEST_MODELS.groqFast, priority: 1 },
@@ -3552,7 +3552,7 @@ describe('router daemon integration hardening', () => {
 
   it('skips remaining candidates from the same provider after an auth error', async () => {
     await withMockProvider(() => ({ status: 401, body: { error: { message: 'bad key' } } }), async (groqProvider) => {
-      await withMockProvider(() => ({ body: { id: 'chatcmpl-auth-skip', choices: [] } }), async (nvidiaProvider) => {
+      await withMockProvider(() => ({ body: { id: 'chatcmpl-auth-skip', choices: [{ message: { role: 'assistant', content: 'ok' } }] } }), async (nvidiaProvider) => {
         await withSourceUrls({ groq: groqProvider.url, nvidia: nvidiaProvider.url }, async () => {
           const config = buildRouterTestConfig([
             { provider: 'groq', model: ROUTER_TEST_MODELS.groqFast, priority: 1 },
@@ -3608,10 +3608,10 @@ describe('router daemon integration hardening', () => {
 
   it('exposes routingOrder in /stats so the dashboard knows which model serves next (issue #120)', async () => {
     await withMockProvider(() => ({
-      body: { id: 'chatcmpl-ok', choices: [] },
+      body: { id: 'chatcmpl-ok', choices: [{ message: { role: 'assistant', content: 'ok' } }] },
     }), async (groqProvider) => {
       await withMockProvider(() => ({
-        body: { id: 'chatcmpl-ok', choices: [] },
+        body: { id: 'chatcmpl-ok', choices: [{ message: { role: 'assistant', content: 'ok' } }] },
       }), async (nvidiaProvider) => {
         await withSourceUrls({ groq: groqProvider.url, nvidia: nvidiaProvider.url }, async () => {
           const config = buildRouterTestConfig([
@@ -3770,7 +3770,7 @@ describe('router daemon integration hardening', () => {
       headers: { 'content-type': 'text/html' },
       rawBody: '<!doctype html><html><body>maintenance</body></html>',
     }), async (groqProvider) => {
-      await withMockProvider(() => ({ body: { id: 'chatcmpl-after-html', choices: [] } }), async (nvidiaProvider) => {
+      await withMockProvider(() => ({ body: { id: 'chatcmpl-after-html', choices: [{ message: { role: 'assistant', content: 'ok' } }] } }), async (nvidiaProvider) => {
         await withSourceUrls({ groq: groqProvider.url, nvidia: nvidiaProvider.url }, async () => {
           const config = buildRouterTestConfig([
             { provider: 'groq', model: ROUTER_TEST_MODELS.groqFast, priority: 1 },
@@ -3795,7 +3795,7 @@ describe('router daemon integration hardening', () => {
       headers: { 'content-type': 'application/json' },
       rawBody: '{"id":',
     }), async (groqProvider) => {
-      await withMockProvider(() => ({ body: { id: 'chatcmpl-after-invalid-json', choices: [] } }), async (nvidiaProvider) => {
+      await withMockProvider(() => ({ body: { id: 'chatcmpl-after-invalid-json', choices: [{ message: { role: 'assistant', content: 'ok' } }] } }), async (nvidiaProvider) => {
         await withSourceUrls({ groq: groqProvider.url, nvidia: nvidiaProvider.url }, async () => {
           const config = buildRouterTestConfig([
             { provider: 'groq', model: ROUTER_TEST_MODELS.groqFast, priority: 1 },
@@ -3816,8 +3816,8 @@ describe('router daemon integration hardening', () => {
   })
 
   it('fails over request timeouts and connection-refused transport errors', async () => {
-    await withMockProvider(() => ({ delayMs: 1100, body: { id: 'too-late', choices: [] } }), async (slowProvider) => {
-      await withMockProvider(() => ({ body: { id: 'chatcmpl-after-timeout', choices: [] } }), async (nvidiaProvider) => {
+    await withMockProvider(() => ({ delayMs: 1100, body: { id: 'too-late', choices: [{ message: { role: 'assistant', content: 'ok' } }] } }), async (slowProvider) => {
+      await withMockProvider(() => ({ body: { id: 'chatcmpl-after-timeout', choices: [{ message: { role: 'assistant', content: 'ok' } }] } }), async (nvidiaProvider) => {
         await withSourceUrls({ groq: slowProvider.url, nvidia: nvidiaProvider.url }, async () => {
           const config = buildRouterTestConfig([
             { provider: 'groq', model: ROUTER_TEST_MODELS.groqFast, priority: 1 },
@@ -3838,7 +3838,7 @@ describe('router daemon integration hardening', () => {
     const closedServer = createHttpServer(() => {})
     const closedPort = await listenOnRandomPort(closedServer)
     await closeRouterTestServer(closedServer)
-    await withMockProvider(() => ({ body: { id: 'chatcmpl-after-refused', choices: [] } }), async (nvidiaProvider) => {
+    await withMockProvider(() => ({ body: { id: 'chatcmpl-after-refused', choices: [{ message: { role: 'assistant', content: 'ok' } }] } }), async (nvidiaProvider) => {
       await withSourceUrls({
         groq: `http://127.0.0.1:${closedPort}/v1/chat/completions`,
         nvidia: nvidiaProvider.url,

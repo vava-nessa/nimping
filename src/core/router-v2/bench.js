@@ -27,7 +27,7 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { getRouterV2PortPath, getRouterV2PortRange } from './constants.js'
+import { getRouterPortPath, getRouterPortRange } from '../router-daemon.js'
 
 export const ROUTER_V2_TEST_PROMPT = 'Why is the sky blue? Answer in one short sentence.'
 export const ROUTER_V2_TEST_TIMEOUT_MS = 20_000
@@ -146,13 +146,13 @@ export async function testSetViaRouter({ port, models, concurrency = 3, timeoutM
 export async function discoverRouterV2Port() {
   const candidates = []
   try {
-    const portPath = getRouterV2PortPath()
+    const portPath = getRouterPortPath()
     if (existsSync(portPath)) {
       const parsed = Number.parseInt(readFileSync(portPath, 'utf8').trim(), 10)
       if (Number.isFinite(parsed)) candidates.push(parsed)
     }
   } catch {}
-  const { defaultPort, maxPort } = getRouterV2PortRange()
+  const { defaultPort, maxPort } = getRouterPortRange()
   for (let port = defaultPort; port <= maxPort; port += 1) {
     if (!candidates.includes(port)) candidates.push(port)
   }

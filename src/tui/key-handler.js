@@ -55,7 +55,6 @@ import {
   testAllVisibleViaRouterV2,
   testModelViaRouterV2,
 } from '../core/router-v2/tui-dashboard.js'
-import { startRouterV2DaemonBackground, stopRouterV2Daemon } from '../core/router-v2/daemon.js'
 import {
   closePlaygroundOverlay,
   openPlaygroundOverlay,
@@ -1802,7 +1801,7 @@ export function createKeyHandler(ctx) {
       if (key.name === 's') {
         const isRunning = state.routerV2Status === 'ready' || state.routerV2Status === 'partial'
         state.routerV2Status = 'loading'
-        spawnDaemonCommand(state, [isRunning ? '--router-v2-stop' : '--router-v2-bg'])
+        spawnDaemonCommand(state, [isRunning ? '--daemon-stop' : '--daemon-bg'])
         return
       }
 
@@ -1810,7 +1809,7 @@ export function createKeyHandler(ctx) {
         if ((state.routerV2CursorIndex ?? 0) === maxCursor) {
           const isRunning = state.routerV2Status === 'ready' || state.routerV2Status === 'partial'
           state.routerV2Status = 'loading'
-          spawnDaemonCommand(state, [isRunning ? '--router-v2-stop' : '--router-v2-bg'])
+          spawnDaemonCommand(state, [isRunning ? '--daemon-stop' : '--daemon-bg'])
         }
         return
       }

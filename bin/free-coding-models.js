@@ -214,27 +214,28 @@ async function main() {
     process.exit(result.ok ? 0 : 1);
   }
 
-  // 📖 Router v2 (beta) lifecycle flags - same shape as the v1 daemon flags
-  // but targeting the parallel v2 daemon on port 19380. v1 and v2 can run at
-  // the same time; each has its own PID/port files.
+  // 📖 Router v2 lifecycle flags are now ALIASES of the main daemon: the v2
+  // engine (content-validated failover, persisted breakers, decision traces,
+  // Anthropic /v1/messages) is merged into the regular router daemon on the
+  // historical port. The flags keep working for existing scripts.
   if (cliArgs.routerV2Mode || cliArgs.routerV2BackgroundMode || cliArgs.routerV2StopMode || cliArgs.routerV2StatusMode) {
     const {
-      getRouterV2DaemonStatus,
-      runRouterV2Daemon,
-      startRouterV2DaemonBackground,
-      stopRouterV2Daemon,
-    } = await import('../src/core/router-v2/daemon.js');
+      getRouterDaemonStatus,
+      runRouterDaemon,
+      startRouterDaemonBackground,
+      stopRouterDaemon,
+    } = await import('../src/core/router-daemon.js');
 
     if (cliArgs.routerV2Mode) {
-      await runRouterV2Daemon();
+      await runRouterDaemon();
       return;
     }
 
     const result = cliArgs.routerV2BackgroundMode
-      ? await startRouterV2DaemonBackground()
+      ? await startRouterDaemonBackground()
       : cliArgs.routerV2StopMode
-        ? await stopRouterV2Daemon()
-        : await getRouterV2DaemonStatus();
+        ? await stopRouterDaemon()
+        : await getRouterDaemonStatus();
 
     console.log(JSON.stringify(result, null, 2));
     process.exit(result.ok ? 0 : 1);

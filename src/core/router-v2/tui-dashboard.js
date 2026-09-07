@@ -44,8 +44,11 @@ import { join } from 'node:path'
 import { displayWidth, padEndDisplay, sliceOverlayLines, tintOverlayLines } from '../../tui/render-helpers.js'
 import { themeColors } from '../../tui/theme.js'
 import { formatTokenTotalCompact } from '../token-usage-reader.js'
-import { getRouterV2PidPath, getRouterV2PortPath, getRouterV2PortRange, parseFcmModel } from './constants.js'
+import { parseFcmModel } from './constants.js'
 import { discoverRouterV2Port, testModelViaRouter, testSetViaRouter } from './bench.js'
+// 📖 After the merge, the v2 engine lives in the MAIN router daemon: all
+// discovery and lifecycle calls target the historical daemon paths/ports.
+import { getRouterPidPath, getRouterPortPath, getRouterPortRange } from '../router-daemon.js'
 
 export const ROUTER_V2_DASHBOARD_POLL_INTERVAL_MS = 2000
 export const ROUTER_V2_DASHBOARD_FETCH_TIMEOUT_MS = 1500
@@ -89,8 +92,8 @@ async function fetchJsonV2(url, options = {}) {
 }
 
 function readV2DaemonFiles() {
-  const pidPath = getRouterV2PidPath()
-  const portPath = getRouterV2PortPath()
+  const pidPath = getRouterPidPath()
+  const portPath = getRouterPortPath()
   return {
     hasPidFile: existsSync(pidPath),
     hasPortFile: existsSync(portPath),
@@ -109,10 +112,10 @@ function readNumberFileSafe(path) {
 }
 
 async function discoverRouterV2Dashboard(state, fetchFn = globalThis.fetch) {
-  const recordedPort = readNumberFileSafe(getRouterV2PortPath())
+  const recordedPort = readNumberFileSafe(getRouterPortPath())
   const candidates = []
   if (recordedPort) candidates.push(recordedPort)
-  const { defaultPort, maxPort } = getRouterV2PortRange()
+  const { defaultPort, maxPort } = getRouterPortRange()
   for (let port = defaultPort; port <= maxPort; port += 1) {
     if (!candidates.includes(port)) candidates.push(port)
   }
@@ -466,13 +469,13 @@ export function renderRouterV2Dashboard(state, deps = {}) {
   const bannerWidth = Math.max(40, width - 6)
   let bannerText, bannerBgRgb
   if (isRunning) {
-    bannerText = '  ROUTER V2 (BETA) RUNNING  '
+    bannerText = '  ROUTER V2 RUNNING (BUILT-IN)  '
     bannerBgRgb = [22, 120, 60]
   } else if (isLoading) {
-    bannerText = `  ROUTER V2 (BETA) STARTING ${loadingGlyph}  `
+    bannerText = `  ROUTER V2 STARTING (BUILT-IN) ${loadingGlyph}  `
     bannerBgRgb = [180, 100, 0]
   } else {
-    bannerText = '  ROUTER V2 (BETA) STOPPED  '
+    bannerText = '  ROUTER V2 STOPPED (BUILT-IN)  '
     bannerBgRgb = [160, 30, 30]
   }
   const padTotal = Math.max(0, bannerWidth - displayWidth(bannerText))
@@ -484,7 +487,7 @@ export function renderRouterV2Dashboard(state, deps = {}) {
   lines.push(`  ${paintBanner(bannerLine)}`)
 
   // ── Quick Setup ─────────────────────────────────────────────────────────────
-  const { defaultPort } = getRouterV2PortRange()
+  const { defaultPort } = getRouterPortRange()
   const port = state.routerV2Port || defaultPort
   lines.push(`  ${themeColors.textBold('Quick Setup')} ${themeColors.dim('(beta)')} ${themeColors.dim('- point your coding tool at v2')}`)
   lines.push(`  ${themeColors.dim('URL')}     ${themeColors.infoBold(`http://localhost:${port}/v1`)}   ${themeColors.dim('Anthropic:')} ${themeColors.infoBold(`http://localhost:${port}`)}  ${themeColors.dim('(POST /v1/messages)')}`)
@@ -589,7 +592,7 @@ export function renderRouterV2Dashboard(state, deps = {}) {
   const isStopped = !isRunning && !isLoading
   const cursorBase = Math.max(1, routingOrder.length)
   const startBtnCursor = cursorBase
-  const startBtnText = isStopped ? '▶ Start Router v2 Daemon' : '⏹ Stop Router v2 Daemon'
+  const startBtnText = isStopped ? '▶ Start Router Daemon (v2 engine)' : '⏹ Stop Router Daemon (v2 engine)'
   const startBtnRow = `  [ ${startBtnText} ]`
   lines.push(cursor === startBtnCursor
     ? themeColors.bgCursor(startBtnRow + ' '.repeat(Math.max(0, width - displayWidth(startBtnRow) - 3)))
@@ -614,7 +617,7 @@ export function renderRouterV2Dashboard(state, deps = {}) {
   lines.push(`  ${separator}`)
   const probeMode = stats?.probeMode || 'balanced'
   lines.push(`  ${themeColors.hotkey('↑↓')} ${themeColors.dim('Navigate')}  ${themeColors.dim('•')}  ${themeColors.hotkey('T')} ${themeColors.dim('Test via router')}  ${themeColors.dim('•')}  ${themeColors.hotkey('S')} ${themeColors.dim(isStopped ? 'Start' : 'Stop')}  ${themeColors.dim('•')}  ${themeColors.hotkey('I')} ${themeColors.dim(`Probes: ${probeMode}`)}  ${themeColors.dim('•')}  ${themeColors.hotkey('C')} ${themeColors.dim('Clear history')}  ${themeColors.dim('•')}  ${themeColors.hotkey('Esc')} ${themeColors.dim('Back')}`)
-  lines.push(`  ${themeColors.dim('BETA: v2 runs next to v1 (Shift+R). Ctrl+T tests the selected table model, Ctrl+Shift+T tests all visible models through the router.')}`)
+  lines.push(`  ${themeColors.dim('BETA: the v2 engine now powers the main router daemon. Ctrl+T tests the selected table model, Ctrl+Shift+T tests all visible models through the router.')}`)
 
   const { visible, offset } = sliceOverlayLines(lines, state.routerV2ScrollOffset || 0, state.terminalRows || 24)
   state.routerV2ScrollOffset = offset

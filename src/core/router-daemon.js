@@ -35,7 +35,7 @@ import { dirname, join, resolve as resolvePath, sep as pathSep } from 'node:path
 import { fork, execFileSync } from 'node:child_process'
 import { randomUUID, timingSafeEqual } from 'node:crypto'
 import { appendFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
-import { homedir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { MODELS, sources } from '../../sources.js'
 import {
@@ -80,6 +80,23 @@ import {
   pruneStaleEntries as pruneRuntimeTelemetry,
   DEFAULT_MIN_CALLS_FOR_SCORE as RUNTIME_MIN_CALLS,
 } from './runtime-telemetry.js'
+// 📖 Router v2 engine (merged into this daemon): typed failure classification,
+// content-level response gating, decision traces, persisted breakers, request
+// history and the Anthropic /v1/messages protocol. The router is now v2
+// internally while keeping every v1 endpoint, flag and port.
+import { classifyFailure, classifyStatus, clientStatusForKind, FAILURE_KINDS } from './router-v2/failure-classifier.js'
+import { validateChatCompletionPayload, createStreamReadinessTracker, estimateTokens } from './router-v2/response-gate.js'
+import { createDecisionTrace, traceSkip, traceAttempt, finishTrace, decisionHeaderValue, traceSummary } from './router-v2/decision-trace.js'
+import { BreakerStore } from './router-v2/breaker-store.js'
+import { RequestHistory } from './router-v2/request-history.js'
+import {
+  anthropicErrorPayload,
+  anthropicErrorTypeForStatus,
+  createAnthropicStreamTransformer,
+  translateAnthropicToOpenAI,
+  translateOpenAIToAnthropicResponse,
+} from './router-v2/anthropic-compat.js'
+import { parseFcmModel } from './router-v2/constants.js'
 
 export const ROUTER_DEFAULT_PORT = 19280
 export const ROUTER_MAX_PORT = 19289
@@ -302,6 +319,27 @@ function getAllowedOrigins() {
       .filter(Boolean)
   }
   return _allowedOriginsCache
+}
+
+// 📖 v2: CORS for loopback (and explicitly allowed) origins so a browser
+// dashboard served from another local port (web dashboard 3333) can call
+// this daemon directly without a proxy.
+function applyCors(req, res) {
+  const origin = typeof req.headers.origin === 'string' ? req.headers.origin : ''
+  if (!origin) return
+  let hostname = ''
+  try {
+    hostname = new URL(origin).hostname
+  } catch {
+    return
+  }
+  const allowed = isLoopbackHostname(hostname) || getAllowedOrigins().includes(origin)
+  if (!allowed) return
+  res.setHeader('Access-Control-Allow-Origin', origin)
+  res.setHeader('Vary', 'Origin')
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-api-key, x-request-id, anthropic-version')
+  res.setHeader('Access-Control-Max-Age', '600')
 }
 
 export function isSameOriginOrLocal(req) {
@@ -634,7 +672,10 @@ export function cloneHeadersForUpstream(reqHeaders, apiKey, providerKey) {
     const lower = key.toLowerCase()
     // 📖 Drop the client's cookies: they belong to the local browser session
     // 📖 and must never be forwarded to the upstream provider.
-    if (['host', 'connection', 'content-length', 'authorization', 'cookie'].includes(lower)) continue
+    // 📖 Also strip `x-api-key`: the local router token can arrive under that
+    // name and must never leak to an upstream provider (v2 security fix).
+    if (['host', 'connection', 'content-length', 'authorization', 'cookie', 'x-api-key'].includes(lower)) continue
+    if (lower.startsWith('x-fcm-') || lower === 'x-request-id') continue
     if (typeof value !== 'string') continue
     if (lower === 'content-type') {
       headers['Content-Type'] = value
@@ -649,6 +690,61 @@ export function cloneHeadersForUpstream(reqHeaders, apiKey, providerKey) {
     headers['X-Title'] = 'free-coding-models'
   }
   return headers
+}
+
+// 📖 v2 defaults for the merged engine. These extend (never replace) the
+// shared failover settings; users override them in ~/.free-coding-models.json
+// under `router.failover` and the raw values are read because the shared
+// normalizer only knows the v1 field names.
+const DEFAULT_BODY_READ_TIMEOUT_MS = 30000
+const DEFAULT_TOTAL_BUDGET_MS = 120000
+const DEFAULT_CONTENT_VALIDATION = 'strict'
+const DEFAULT_QUOTA_PAUSE_MS = 60000
+const MAX_CONCURRENT_QUEUE_RETRY_AFTER_S = 3
+
+function clampIntV2(value, fallback, { min, max }) {
+  const n = Number(value)
+  if (!Number.isFinite(n)) return fallback
+  return Math.min(max, Math.max(min, Math.round(n)))
+}
+
+// 📖 Read the upstream body under a hard deadline (v2 fix): v1 cleared the
+// request timeout as soon as headers arrived, so a provider that trickled the
+// body could hang an agent forever.
+async function readBodyWithTimeout(response, controller, timeoutMs) {
+  let timer = null
+  try {
+    return await Promise.race([
+      response.text(),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => {
+          try { controller.abort() } catch {}
+          reject(Object.assign(new Error('upstream_body_read_timeout'), { name: 'BodyReadTimeoutError' }))
+        }, timeoutMs)
+      }),
+    ])
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
+
+// 📖 Map a content-gate rejection reason to its failure kind name.
+function gateReasonToKind(reason) {
+  switch (reason) {
+    case 'error_payload': return 'ERROR_PAYLOAD'
+    case 'empty_choices': return 'EMPTY_CHOICES'
+    case 'empty_content': return 'EMPTY_CONTENT'
+    case 'invalid_json': return 'INVALID_JSON'
+    default: return 'INVALID_JSON'
+  }
+}
+
+function parseLastResortModel(value) {
+  if (typeof value !== 'string') return null
+  const trimmed = value.trim()
+  const slashIdx = trimmed.indexOf('/')
+  if (slashIdx <= 0 || slashIdx === trimmed.length - 1) return null
+  return { provider: trimmed.slice(0, slashIdx), model: trimmed.slice(slashIdx + 1), key: trimmed }
 }
 
 export function getApiModelId(providerKey, modelId) {
@@ -969,8 +1065,8 @@ export class TokenTracker {
   }
 }
 
-class RouterRuntime {
-  constructor({ config, port, logger, tokenPath = ROUTER_TOKENS_PATH, persistConfig = true }) {
+export class RouterRuntime {
+  constructor({ config, port, logger, tokenPath = ROUTER_TOKENS_PATH, persistConfig = true, paths = {} }) {
     this.config = config
     this.port = port
     this.logger = logger
@@ -984,11 +1080,28 @@ class RouterRuntime {
     this.configReloadTimer = null
     this.tokenFlushTimer = null
     this.probeTimer = null
+    this.probeWatchdog = null
     this.probeTimeouts = new Set()
     this.tokenTracker = new TokenTracker(tokenPath, logger)
     this.modelCatalog = this.buildModelCatalog()
     this.probeWindows = new Map()
-    this.circuit = new Map()
+    // 📖 v2 engine: persisted circuit breakers (survive restarts, DEGRADED
+    // warning state, escalating backoff). `this.circuit` stays the shared Map
+    // so every v1 read-path keeps working; it IS the breaker store's map.
+    this.breakers = new BreakerStore({
+      path: paths.breakers || join(homedir(), '.free-coding-models-router-v2-breakers.json'),
+      logger,
+    })
+    this.circuit = this.breakers.breakers
+    // 📖 v2 engine: persisted request history (fallback chains per request)
+    // and the in-flight decision traces surfaced on /api/router-v2/*.
+    this.history = new RequestHistory({
+      path: paths.history || join(homedir(), '.free-coding-models-router-v2-history.json'),
+      logger,
+      maxEntries: 500,
+    })
+    this.recentTraces = []
+    this.quotaPauses = new Map()
     this.requestLog = []
     this.activeRequests = new Map()
     this.sseClients = new Set()
@@ -1078,20 +1191,11 @@ class RouterRuntime {
       for (const model of set.models || []) {
         const key = modelKey(model.provider, model.model)
         if (!this.probeWindows.has(key)) this.probeWindows.set(key, [])
-        if (!this.circuit.has(key)) {
-          this.circuit.set(key, {
-            state: 'CLOSED',
-            consecutiveFailures: 0,
-            cooldownMs: router.circuitBreaker.initialCooldownMs,
-            openedAt: null,
-            lastError: null,
-            authError: false,
-            stale: false,
-          })
-        }
-        const entry = this.circuit.get(key)
-        entry.stale = !this.modelCatalog.has(key)
+        // 📖 v2: entries come from the persisted breaker store (restored state
+        // included); catalog-derived flags are refreshed on every boot.
+        const entry = this.breakers.ensure(key, router.circuitBreaker.initialCooldownMs)
         const catalogEntry = this.modelCatalog.get(key)
+        entry.stale = !this.modelCatalog.has(key)
         entry.unsupported = Boolean(catalogEntry && !catalogEntry.routeable)
         if (entry.stale && !this.staleNotifications.has(key)) {
           this.staleNotifications.add(key)
@@ -1149,8 +1253,11 @@ class RouterRuntime {
   reloadConfigFromDisk() {
     try {
       const nextConfig = loadConfig()
-      // 📖 Always rebuild the router set from favorites so UI toggles apply dynamically
-      void ensureRouterConfigForDaemon(nextConfig, true)
+      // 📖 v2 fix: do NOT run ensureRouterConfigForDaemon here. It rebuilds
+      // the router section from DEFAULT_ROUTER_SETTINGS and silently
+      // discards user failover tuning (requestTimeoutMs, streamStall, and
+      // the v2-only fields) on every 10s tick. The raw file is adopted
+      // as-is; routerConfig() normalizes on read.
       this.config = nextConfig
       this.refreshRouteState()
       this.scheduleProbeLoop()
@@ -1178,16 +1285,54 @@ class RouterRuntime {
     return [...(set?.models || [])].sort((a, b) => a.priority - b.priority)
   }
 
-  updateCircuitForCooldown(key) {
-    const state = this.circuit.get(key)
-    if (!state || state.state !== 'OPEN') return state
-    const elapsed = Date.now() - (state.openedAt || 0)
-    if (elapsed >= state.cooldownMs) {
-      const oldState = state.state
-      state.state = 'HALF_OPEN'
-      this.broadcast('circuit', { model: key, old_state: oldState, new_state: state.state, cooldown_ms: state.cooldownMs })
+  // ─── v2 engine: failover settings + quota pauses + breaker plumbing ───────
+
+  // 📖 v2-specific failover knobs are read from the RAW config: the shared
+  // normalizer only knows the v1 field names and would drop the new ones.
+  failoverSettings() {
+    const normalized = this.routerConfig().failover
+    const raw = (this.config?.router?.failover && typeof this.config.router.failover === 'object')
+      ? this.config.router.failover
+      : {}
+    const validation = raw.contentValidation
+    return {
+      ...normalized,
+      bodyReadTimeoutMs: clampIntV2(raw.bodyReadTimeoutMs, DEFAULT_BODY_READ_TIMEOUT_MS, { min: 5000, max: 300000 }),
+      totalBudgetMs: clampIntV2(raw.totalBudgetMs, DEFAULT_TOTAL_BUDGET_MS, { min: 10000, max: 600000 }),
+      contentValidation: ['strict', 'basic', 'off'].includes(validation) ? validation : DEFAULT_CONTENT_VALIDATION,
+      lastResortModel: parseLastResortModel(raw.lastResortModel),
     }
-    return state
+  }
+
+  breakerParams() {
+    const cb = this.routerConfig().circuitBreaker
+    return {
+      failureThreshold: cb.failureThreshold,
+      initialCooldownMs: cb.initialCooldownMs,
+      maxCooldownMs: cb.maxCooldownMs,
+      backoffMultiplier: cb.backoffMultiplier,
+    }
+  }
+
+  quotaPauseActive(key) {
+    const pause = this.quotaPauses.get(key)
+    if (!pause) return false
+    if (Date.now() >= pause.until) {
+      this.quotaPauses.delete(key)
+      return false
+    }
+    return true
+  }
+
+  quotaPausesForKeys(keys) {
+    return keys
+      .map((key) => this.quotaPauses.get(key))
+      .filter(Boolean)
+  }
+
+  updateCircuitForCooldown(key) {
+    // 📖 v2: lazy OPEN -> HALF_OPEN promotion lives in the breaker store.
+    return this.breakers.evaluate(key)
   }
 
   recordProbeResult(key, result) {
@@ -1244,69 +1389,86 @@ class RouterRuntime {
   }
 
   markAuthError(key, detail = 'authentication failed') {
-    const state = this.circuit.get(key)
+    const state = this.breakers.get(key)
     if (!state) return
-    state.authError = true
-    state.lastError = detail
+    this.breakers.markFailure(key, { ...this.breakerParams(), detail, authError: true })
     this.broadcast('circuit', { model: key, old_state: state.state, new_state: 'AUTH_ERROR', cooldown_ms: 0 })
   }
 
   markSuccess(key, latencyMs = null) {
-    const state = this.circuit.get(key)
-    if (!state) return
-    const oldState = state.state
-    state.state = 'CLOSED'
-    state.consecutiveFailures = 0
-    state.cooldownMs = this.routerConfig().circuitBreaker.initialCooldownMs
-    state.openedAt = null
-    state.lastError = null
-    state.authError = false
+    const oldState = this.breakers.get(key)?.state
+    this.breakers.markSuccess(key, this.routerConfig().circuitBreaker.initialCooldownMs)
     this.quotaExhausted.delete(key)
     this.quotaDetails.delete(key)
-    if (oldState !== state.state) {
-      this.broadcast('circuit', { model: key, old_state: oldState, new_state: state.state, cooldown_ms: state.cooldownMs })
+    this.quotaPauses.delete(key)
+    if (oldState && oldState !== 'CLOSED') {
+      this.broadcast('circuit', { model: key, old_state: oldState, new_state: 'CLOSED', cooldown_ms: 0 })
     }
     if (latencyMs !== null) this.recordProbeResult(key, { ok: true, latencyMs, code: 200 })
   }
 
-  markFailure(key, detail, statusCode = null, meta = {}) {
-    const state = this.circuit.get(key)
-    if (!state) return
-    state.authError = false
-    state.consecutiveFailures += 1
-    state.lastError = detail
-    if (statusCode === 429 || meta.quotaExhausted) {
-      this.quotaExhausted.add(key)
-      this.quotaDetails.set(key, {
+  // 📖 Single funnel from a failure verdict to health state (v2): circuit
+  // damage, quota pause and probe-window recording all derive from the
+  // classifier's policy instead of ad-hoc per-path bookkeeping.
+  applyFailureVerdict(key, verdict, { detail, statusCode = null, latencyMs = null, meta = {} } = {}) {
+    if (verdict.kind === FAILURE_KINDS.AUTH) {
+      this.breakers.markFailure(key, { ...this.breakerParams(), detail, statusCode, authError: true })
+      this.broadcast('circuit', { model: key, state: 'AUTH_ERROR', reason: detail })
+    } else if (verdict.healthDamage) {
+      const result = this.breakers.markFailure(key, { ...this.breakerParams(), detail, statusCode })
+      this.broadcast('circuit', {
         model: key,
-        status: statusCode,
-        retry_after_ms: meta.retryAfterMs ?? null,
-        rate_limit_headers: meta.rateLimitHeaders || {},
-        last_seen: nowIso(),
+        state: result.state,
+        opened: result.opened,
+        degraded: result.degraded,
+        reason: detail,
       })
+      if (result.opened) this.logger.warn(`Circuit opened for ${key}`, { reason: detail })
+      else if (result.degraded) this.logger.warn(`Circuit DEGRADED for ${key}`, { reason: detail })
+    } else {
+      // 📖 No health damage (client-caused 4xx): remember the reason for the
+      // dashboards but never push the breaker toward OPEN.
+      const breaker = this.breakers.ensure(key, this.routerConfig().circuitBreaker.initialCooldownMs)
+      breaker.lastError = detail
     }
-    const router = this.routerConfig()
-    if (state.state === 'HALF_OPEN' || state.consecutiveFailures >= router.circuitBreaker.failureThreshold) {
-      const oldState = state.state
-      state.state = 'OPEN'
-      state.openedAt = Date.now()
-      state.cooldownMs = Math.min(
-        router.circuitBreaker.maxCooldownMs,
-        Math.max(router.circuitBreaker.initialCooldownMs, state.cooldownMs * router.circuitBreaker.backoffMultiplier),
-      )
-      this.broadcast('circuit', { model: key, old_state: oldState, new_state: state.state, cooldown_ms: state.cooldownMs })
-      this.logger.warn(`Circuit opened for ${key}`, { reason: detail, cooldown_ms: state.cooldownMs })
-      void sendUsageTelemetry(this.config, {}, {
-        event: 'app_router_circuit_open',
-        mode: 'daemon',
-        properties: {
-          model: key,
-          consecutive_failures: state.consecutiveFailures,
-          cooldown_ms: state.cooldownMs,
-        },
-      })
+    // 📖 Quota bookkeeping: the pause map drives routing skips (Retry-After
+    // aware); the legacy set feeds the all-models-failed error payloads.
+    if ((verdict.quotaPauseMs != null && verdict.quotaPauseMs > 0)
+      || verdict.kind === FAILURE_KINDS.RATE_LIMIT
+      || verdict.kind === FAILURE_KINDS.QUOTA
+      || meta.quotaExhausted) {
+      this.recordQuotaPause(key, verdict.quotaPauseMs || DEFAULT_QUOTA_PAUSE_MS, statusCode, meta)
     }
-    this.recordProbeResult(key, { ok: false, latencyMs: null, code: statusCode || 'ERR', error: detail })
+    if (verdict.kind !== FAILURE_KINDS.RATE_LIMIT && verdict.kind !== FAILURE_KINDS.QUOTA) {
+      this.quotaExhausted.delete(key)
+    }
+    this.recordProbeResult(key, { ok: false, latencyMs, code: statusCode || 'ERR', error: detail })
+  }
+
+  recordQuotaPause(key, pauseMs, statusCode, meta = {}) {
+    this.quotaPauses.set(key, {
+      model: key,
+      until: Date.now() + pauseMs,
+      retry_after_ms: pauseMs,
+      status: statusCode,
+      rate_limit_headers: meta.rateLimitHeaders || {},
+      last_seen: nowIso(),
+    })
+    this.quotaExhausted.add(key)
+    this.quotaDetails.set(key, {
+      model: key,
+      status: statusCode,
+      retry_after_ms: pauseMs,
+      rate_limit_headers: meta.rateLimitHeaders || {},
+      last_seen: nowIso(),
+    })
+  }
+
+  markFailure(key, detail, statusCode = null, meta = {}) {
+    // 📖 v2: classify first, then apply the verdict policy. Same call shape
+    // as v1 so probe loops and legacy paths keep working.
+    const verdict = classifyFailure({ status: statusCode, retryAfterMs: meta.retryAfterMs ?? null })
+    this.applyFailureVerdict(key, verdict, { detail, statusCode, meta })
   }
 
   quotaDetailsForKeys(keys) {
@@ -1414,27 +1576,56 @@ class RouterRuntime {
   // 📖 Circuit-breaker safety is preserved: CLOSED (healthy) models always come
   // 📖 before HALF_OPEN (probing after cooldown) models, so a recovering model
   // 📖 never pre-empts a known-good one.
-  getRoutingCandidates(set) {
+  getRoutingCandidates(set, { trace = null, blockedProviders = null } = {}) {
     const scored = this.scoreCandidates(set)
-    const usable = scored.filter((candidate) => {
-      if (!candidate.catalog || candidate.circuit?.stale) return false
-      if (!candidate.catalog.routeable || candidate.circuit?.unsupported) return false
-      if (candidate.circuit?.authError) return false
-      if (!this.getApiKeyForProvider(candidate.provider)) return false
-      return candidate.circuit?.state === 'CLOSED' || candidate.circuit?.state === 'HALF_OPEN'
-    })
+    const usable = []
+    for (const candidate of scored) {
+      if (blockedProviders?.has(candidate.provider)) {
+        traceSkip(trace, candidate.key, 'provider_blocked')
+        continue
+      }
+      if (!candidate.catalog || candidate.circuit?.stale) {
+        traceSkip(trace, candidate.key, 'stale')
+        continue
+      }
+      if (!candidate.catalog.routeable || candidate.circuit?.unsupported) {
+        traceSkip(trace, candidate.key, 'unsupported')
+        continue
+      }
+      if (candidate.circuit?.authError) {
+        traceSkip(trace, candidate.key, 'auth_error')
+        continue
+      }
+      if (!this.getApiKeyForProvider(candidate.provider)) {
+        traceSkip(trace, candidate.key, 'missing_key')
+        continue
+      }
+      // 📖 v2: a rate-limited model is paused for its Retry-After window and
+      // skipped entirely, instead of being retried until its circuit opens.
+      if (this.quotaPauseActive(candidate.key)) {
+        traceSkip(trace, candidate.key, 'quota_paused')
+        continue
+      }
+      const state = candidate.circuit?.state || 'UNKNOWN'
+      if (state !== 'CLOSED' && state !== 'HALF_OPEN' && state !== 'DEGRADED') {
+        traceSkip(trace, candidate.key, state === 'OPEN' ? 'circuit_open' : 'circuit_state')
+        continue
+      }
+      usable.push(candidate)
+    }
     // 📖 New ordering: prioritize by explicit priority first, then by circuit state
-    // 📖 (CLOSED before HALF_OPEN), and finally by health score (higher is better).
-    // 📖 This ensures a higher‑priority model is never skipped just because it is
-    // 📖 in HALF_OPEN while a lower‑priority CLOSED model is available.
-    const stateOrder = { CLOSED: 0, HALF_OPEN: 1 }
+    // 📖 (CLOSED before DEGRADED before HALF_OPEN), and finally by health score
+    // 📖 (higher is better). This ensures a higher-priority model is never
+    // 📖 skipped just because it is in HALF_OPEN while a lower-priority CLOSED
+    // 📖 model is available. DEGRADED (failing, not yet tripped) still routes.
+    const stateOrder = { CLOSED: 0, DEGRADED: 1, HALF_OPEN: 2 }
     const comparator = (a, b) => {
       if (a.priority !== b.priority) return a.priority - b.priority
       const aState = a.circuit?.state || 'UNKNOWN'
       const bState = b.circuit?.state || 'UNKNOWN'
       if (aState !== bState) {
-        const aRank = stateOrder[aState] ?? 2
-        const bRank = stateOrder[bState] ?? 2
+        const aRank = stateOrder[aState] ?? 3
+        const bRank = stateOrder[bState] ?? 3
         return aRank - bRank
       }
       // higher score first
@@ -1471,17 +1662,31 @@ class RouterRuntime {
           ? 'STALE'
           : candidate.circuit?.unsupported
             ? 'UNSUPPORTED'
-            : candidate.circuit?.state || 'UNKNOWN',
+            : this.quotaPauseActive(candidate.key)
+              ? 'QUOTA_PAUSED'
+              : candidate.circuit?.state || 'UNKNOWN',
       score: Number(candidate.score.toFixed(4)),
       last_latency_ms: candidate.stats.last?.latencyMs ?? null,
       uptime: candidate.stats.uptime,
       last_error: candidate.circuit?.lastError || null,
+      quota_paused_until: this.quotaPauses.get(candidate.key)
+        ? new Date(this.quotaPauses.get(candidate.key).until).toISOString()
+        : null,
       // 📖 AI Latency benchmark results for the Router Dashboard's "Probe all"
       // 📖 button. Mirrors the per-model fields already exposed on /api/models
       // 📖 so the set list can show live AI latency + TPS after a probe.
       isBenchmarking: this.webBenchmarkRunning?.has(candidate.key) || false,
       benchmark: this.webBenchmarkResults?.get(candidate.key) || null,
     }))
+  }
+
+  // 📖 v2: breaker census for dashboards (CLOSED / DEGRADED / OPEN / ...).
+  getModelStates(set = this.getSet()) {
+    const counts = { CLOSED: 0, DEGRADED: 0, OPEN: 0, HALF_OPEN: 0, AUTH_ERROR: 0, QUOTA_PAUSED: 0 }
+    for (const model of this.getModelHealth(set || { models: [] })) {
+      if (counts[model.state] !== undefined) counts[model.state] += 1
+    }
+    return counts
   }
 
   findBestModelForProviderInSources(providerKey) {
@@ -1675,6 +1880,24 @@ class RouterRuntime {
       configPath: CONFIG_PATH,
       tokenStatsPath: ROUTER_TOKENS_PATH,
       logPath: ROUTER_LOG_PATH,
+      // 📖 v2 engine: failover knobs, live breaker census, quota pauses and
+      // the persisted request-history aggregates for dashboards.
+      router: 'v2',
+      failover: {
+        maxRetries: router.failover.maxRetries,
+        requestTimeoutMs: router.failover.requestTimeoutMs,
+        bodyReadTimeoutMs: this.failoverSettings().bodyReadTimeoutMs,
+        totalBudgetMs: this.failoverSettings().totalBudgetMs,
+        contentValidation: this.failoverSettings().contentValidation,
+        lastResortModel: this.failoverSettings().lastResortModel?.key || null,
+      },
+      modelStates: this.getModelStates(activeSet),
+      quotaPauses: this.quotaPausesForKeys([...this.quotaPauses.keys()]).map((p) => ({
+        model: p.model,
+        until: new Date(p.until).toISOString(),
+        retry_after_ms: p.retry_after_ms,
+      })),
+      history: this.history.stats(),
       // 📖 Probe-cache (t1): live aggregates from the persistent probe-cache.
       // 📖 Surfaced so the Web Dashboard + CLI can show cache hit rate + how many
       // 📖 broken models are currently hidden. Refreshed every /stats call.
@@ -1718,6 +1941,9 @@ class RouterRuntime {
         completed: this.webGlobalBenchmarkCompleted || 0,
       },
       requestLog: this.requestLog.slice(0, 20),
+      // 📖 v2 engine: persisted breakers + recent decision traces.
+      breakers: this.breakers.snapshot(),
+      traces: this.recentTraces.slice(-20).map((trace) => this.historyEntryFromTrace(trace)),
       activeRequests: Array.from(this.activeRequests.values()).map(r => ({
         requestId: r.requestId,
         at: r.at,
@@ -2081,119 +2307,245 @@ class RouterRuntime {
     this.probeWatchdog.unref?.()
   }
 
-  async routeRequest({ req, res, body, setName, requestId }) {
-    this.activeRequests.set(requestId, {
+  // 📖 Shared admission helpers for the v2 engine (decision traces, pinned
+  // models, protocol-aware errors). Everything below keeps the v1 call
+  // shapes so the whole v1 surface (sets API, web dashboard, playground)
+  // keeps working on top of the hardened engine.
+
+  resolvePinnedCandidate(pinned) {
+    const key = modelKey(pinned.provider, pinned.model)
+    const catalog = this.modelCatalog.get(key)
+    if (!catalog) return { error: `Unknown model: ${key}` }
+    if (!isRouteableProvider(pinned.provider, sources)) return { error: `Provider is not routeable: ${pinned.provider}` }
+    if (!this.getApiKeyForProvider(pinned.provider)) return { error: `No API key configured for ${pinned.provider}` }
+    const breaker = this.breakers.get(key) || {}
+    return {
+      candidate: {
+        provider: pinned.provider,
+        model: pinned.model,
+        priority: 1,
+        key,
+        score: 0,
+        stats: this.getWindowStats(key),
+        circuit: breaker,
+        catalog,
+      },
+    }
+  }
+
+  rememberTrace(trace) {
+    this.recentTraces.push(trace)
+    while (this.recentTraces.length > 50) this.recentTraces.shift()
+  }
+
+  historyEntryFromTrace(trace, { stream = false, set = null } = {}) {
+    return {
+      request_id: trace.request_id,
+      at: trace.at,
+      set: set || trace.set,
+      protocol: trace.protocol,
+      model_requested: trace.model_requested,
+      pinned_model: trace.pinned_model,
+      served_model: trace.served_model,
+      outcome: trace.outcome,
+      attempts: trace.attempts,
+      skipped: trace.skipped,
+      wall_ms: trace.wall_ms,
+      tokens: trace.tokens,
+      stream,
+      last_resort_used: trace.last_resort_used,
+      summary: traceSummary(trace),
+    }
+  }
+
+  decisionHeaders(trace) {
+    const lastModel = trace.attempts.length > 0 ? trace.attempts[trace.attempts.length - 1].model : 'none'
+    return {
+      'x-fcm-router-model': trace.served_model || lastModel,
+      'x-fcm-v2-model': trace.served_model || lastModel,
+      'x-fcm-v2-attempts': String(trace.attempts.length),
+      'x-fcm-v2-decision': decisionHeaderValue(trace),
+      'x-request-id': trace.request_id,
+    }
+  }
+
+  sendProtocolError(res, protocol, statusCode, message, requestId, extra = {}) {
+    if (protocol === 'anthropic') {
+      sendJson(res, statusCode, anthropicErrorPayload(anthropicErrorTypeForStatus(statusCode), message), {
+        'x-request-id': requestId,
+        ...extra.headers,
+      })
+      return
+    }
+    sendError(res, statusCode, message, 'service_unavailable', extra.code || 'router_error', requestId, extra.payload)
+  }
+
+  retryAfterHeaders() {
+    const pauses = this.quotaPausesForKeys([...this.quotaPauses.keys()])
+    if (pauses.length === 0) return {}
+    const maxUntil = Math.max(...pauses.map((p) => p.until))
+    const seconds = Math.max(1, Math.ceil((maxUntil - Date.now()) / 1000))
+    return { 'Retry-After': String(Math.min(seconds, 900)) }
+  }
+
+  buildUpstreamBody(body, candidate, stream) {
+    const bodyWithPrePrompt = applyPrePromptToBody(body, this.routerConfig().prePrompt)
+    const bodyNormalized = normalizeRequestBody(bodyWithPrePrompt, candidate.provider)
+    const upstreamBody = {
+      ...bodyNormalized,
+      model: getApiModelId(candidate.provider, candidate.model),
+      stream,
+    }
+    // 📖 Some providers/models fail if we send custom internal params.
+    if (upstreamBody.add_generation_prompt !== undefined) delete upstreamBody.add_generation_prompt
+    if (upstreamBody.continue_final_message !== undefined) delete upstreamBody.continue_final_message
+    if (upstreamBody.tools?.length === 0) delete upstreamBody.tools
+    return upstreamBody
+  }
+
+  async routeRequest({ req, res, body, setName, requestId, protocol = 'openai', anthropicModelName = null }) {
+    const trace = createDecisionTrace({
       requestId,
-      at: Date.now(),
-      model: body?.model || 'fcm',
-      current_model: null,
-      attempts: 0,
-      tokens: 0,
-      stalled: false
+      set: setName || this.routerConfig().activeSet,
+      protocol,
+      modelRequested: body?.model || 'fcm',
     })
+    const started = Date.now()
+
+    // 📖 v2 lifecycle fix: every rejection guard runs BEFORE the
+    // active-request entry exists, and the entry only lives inside the
+    // try/finally. v1 created it first, so each rejected request leaked a
+    // ghost "active request" into /stats until restart.
     if (this.shuttingDown) {
-      sendError(res, 503, 'Daemon is shutting down', 'service_unavailable', 'daemon_shutting_down', requestId)
+      this.sendProtocolError(res, protocol, 503, 'Daemon is shutting down', requestId)
+      finishTrace(trace, { outcome: 'rejected', wallMs: Date.now() - started })
+      this.rememberTrace(trace)
       return
     }
     if (this.inFlight >= MAX_CONCURRENT_REQUESTS) {
       sendError(res, 503, 'Router overloaded, too many concurrent requests', 'service_unavailable', 'router_overloaded', requestId)
+      finishTrace(trace, { outcome: 'overloaded', wallMs: Date.now() - started })
+      this.rememberTrace(trace)
       return
     }
     if (!body || typeof body !== 'object' || Array.isArray(body)) {
       sendError(res, 400, 'Request body must be a JSON object', 'invalid_request_error', 'invalid_json_object', requestId)
+      finishTrace(trace, { outcome: 'rejected', wallMs: Date.now() - started })
+      this.rememberTrace(trace)
       return
     }
     if (typeof body.model !== 'string' || !body.model.trim()) {
       sendError(res, 400, 'Missing required field: model', 'invalid_request_error', 'missing_model', requestId)
+      finishTrace(trace, { outcome: 'rejected', wallMs: Date.now() - started })
+      this.rememberTrace(trace)
       return
     }
 
-    const set = this.getSet(setName)
-    if (!set) {
-      sendError(res, 404, `Router set not found: ${setName || this.routerConfig().activeSet}`, 'invalid_request_error', 'set_not_found', requestId)
-      return
-    }
-
-    const candidates = this.getRoutingCandidates(set)
-    const maxRetries = this.routerConfig().failover.maxRetries
-    const maxAttempts = 1 + maxRetries
-    if (candidates.length === 0) {
-      const health = this.getModelHealth(set)
-      const quotaExhausted = [...this.quotaExhausted].filter((key) => set.models.some((model) => modelKey(model.provider, model.model) === key))
-
-      let statusCode = 503
-      let errorCode = 'all_models_unavailable'
-      let errorType = 'service_unavailable'
-      if (health.length > 0) {
-        const allAuthError = health.length > 0 && health.every((h) => h.state === 'AUTH_ERROR')
-        const allAuthOrQuota = health.length > 0 && health.every((h) => h.state === 'AUTH_ERROR' || quotaExhausted.includes(h.key))
-        const allStaleOrUnsupported = health.every((h) => h.state === 'STALE' || h.state === 'UNSUPPORTED')
-        if (allAuthError) {
-          statusCode = 401
-          errorCode = 'invalid_api_key'
-          errorType = 'invalid_request_error'
-        } else if (allAuthOrQuota) {
-          statusCode = 429
-          errorCode = 'insufficient_quota'
-          errorType = 'insufficient_quota'
-        } else if (allStaleOrUnsupported) {
-          statusCode = 400
-          errorCode = 'invalid_model'
-          errorType = 'invalid_request_error'
-        }
+    // 📖 Model spec: `fcm` (active set), `fcm:<set>`, or `fcm:@provider/model`
+    // (pinned single-model request, failover disabled - used by the
+    // test-via-router actions to exercise ONE model through the full chain).
+    const spec = parseFcmModel(body.model)
+    let set = null
+    let pinned = null
+    if (spec.kind === 'pinned') {
+      pinned = spec.pinned
+      set = this.getSet(null)
+      if (!set) {
+        this.sendProtocolError(res, protocol, 503, 'No active router set', requestId, { code: 'set_not_found' })
+        finishTrace(trace, { outcome: 'rejected', wallMs: Date.now() - started })
+        this.rememberTrace(trace)
+        return
       }
-
-      sendError(res, statusCode, `All models in set are unavailable: ${set.name}`, errorType, errorCode, requestId, {
-        set: set.name,
-        models_tried: [],
-        quota_exhausted: quotaExhausted,
-        quota_exhausted_details: this.quotaDetailsForKeys(quotaExhausted),
-        model_health: health,
-      })
-      void sendUsageTelemetry(this.config, {}, {
-        event: 'app_router_all_down',
-        mode: 'daemon',
-        properties: {
-          set_name: set.name,
-          models_tried: [],
-          quota_exhausted_count: quotaExhausted.length,
-        },
-      })
-      return
+      trace.pinned_model = `${pinned.provider}/${pinned.model}`
+    } else {
+      const requestedSetName = spec.kind === 'set' ? spec.set : setName
+      set = this.getSet(requestedSetName)
+      if (!set) {
+        sendError(res, 404, `Router set not found: ${requestedSetName || this.routerConfig().activeSet}`, 'invalid_request_error', 'set_not_found', requestId)
+        finishTrace(trace, { outcome: 'rejected', wallMs: Date.now() - started })
+        this.rememberTrace(trace)
+        return
+      }
     }
+
+    const settings = this.failoverSettings()
+    const maxAttempts = pinned ? 1 : Math.min(1 + this.routerConfig().failover.maxRetries, 6)
+    const deadline = Date.now() + settings.totalBudgetMs
+    const stream = body.stream === true
 
     this.inFlight += 1
+    const activeReq = {
+      requestId,
+      at: Date.now(),
+      model: body.model,
+      current_model: null,
+      attempts: 0,
+      tokens: 0,
+      stalled: false,
+      last_activity_at: Date.now(),
+    }
+    this.activeRequests.set(requestId, activeReq)
     try {
+      let candidates
+      if (pinned) {
+        // 📖 Pinned tests deliberately bypass availability pre-skips (circuit
+        // OPEN, quota pause): the point is a genuine attempt that feeds real
+        // health data back into the breakers.
+        const resolved = this.resolvePinnedCandidate(pinned)
+        if (resolved.error) {
+          this.sendProtocolError(res, protocol, 400, resolved.error, requestId, { code: 'invalid_model' })
+          finishTrace(trace, { outcome: 'rejected', wallMs: Date.now() - started })
+          return
+        }
+        candidates = [resolved.candidate]
+      } else {
+        candidates = this.getRoutingCandidates(set, { trace })
+      }
+
+      if (candidates.length === 0) {
+        this.sendAllModelsUnavailable(res, trace, set, requestId, protocol)
+        return
+      }
+
       const tried = []
+      const failedKinds = []
       const blockedProviders = new Set()
       let attemptIndex = 0
-      // 📖 attemptChain is a private copy of the routing order: on a family
-      // failover (t8) the same-family candidate is swapped in as the NEXT
-      // attempt, so the iteration order itself follows the two-stage policy.
       const attemptChain = candidates.slice()
+
       for (let index = 0; index < attemptChain.length && attemptIndex < maxAttempts; index += 1) {
+        if (Date.now() > deadline) {
+          this.logger.warn('Request retry budget exhausted; failing over to error', { request_id: requestId })
+          break
+        }
         const candidate = attemptChain[index]
         if (blockedProviders.has(candidate.provider)) continue
 
-        const activeReq = this.activeRequests.get(requestId)
-        if (activeReq) {
-          activeReq.current_model = candidate.key
-          activeReq.attempts = attemptIndex + 1
-        }
-
+        activeReq.current_model = candidate.key
+        activeReq.attempts = attemptIndex + 1
         tried.push(candidate.key)
-        const result = body.stream === true
-          ? await this.proxyStreamingRequest({ req, res, body, candidate, requestId, attemptIndex })
-          : await this.proxyJsonRequest({ req, res, body, candidate, requestId, attemptIndex })
+        traceAttempt(trace, candidate.key, { status: null })
+
+        const result = stream
+          ? await this.proxyStreamingRequest({ req, res, body, candidate, requestId, attemptIndex, protocol, trace, anthropicModelName })
+          : await this.proxyJsonRequest({ req, res, body, candidate, requestId, attemptIndex, protocol, trace })
+
+        trace.attempts[trace.attempts.length - 1] = {
+          ...trace.attempts[trace.attempts.length - 1],
+          model: candidate.key,
+          status: result.status ?? null,
+          latency_ms: result.latencyMs ?? null,
+          error: result.reason || null,
+          at: new Date().toISOString(),
+        }
+        if (result.verdict) failedKinds.push(result.verdict.kind)
         if (result.done) return
         attemptIndex += 1
-        if (result.authFailure) blockedProviders.add(candidate.provider)
+        if (result.verdict?.blockProvider) blockedProviders.add(candidate.provider)
+
         if (result.failoverToNext && attemptIndex < maxAttempts) {
           // 📖 Two-stage failover (t8): prefer a healthy model of the SAME
-          // family on another provider (DeepSeek down on NIM -> DeepSeek on
-          // Together) so the user's output style doesn't change mid-request.
-          // Falls back to the historical set-order pick, and is disabled
-          // per-set via familyFailover: false.
+          // family on another provider so output style stays consistent.
           const pick = pickNextCandidate({
             candidates: attemptChain,
             failedCandidate: candidate,
@@ -2202,9 +2554,6 @@ class RouterRuntime {
             familyFailover: set.familyFailover !== false,
           })
           const next = pick?.candidate || null
-          // 📖 Reorder the remaining chain so `next` is genuinely the following
-          // attempt. With set-order picks this is already the case (or the
-          // skipped entries are blocked anyway), so behaviour is unchanged.
           if (next && attemptChain[index + 1] !== next) {
             const nextIndex = attemptChain.indexOf(next)
             if (nextIndex > index) {
@@ -2212,6 +2561,8 @@ class RouterRuntime {
               attemptChain.splice(index + 1, 0, next)
             }
           }
+          // 📖 t8: stamp the reason ('family_failover' | 'set_order') on the
+          // active request so every log entry of the next attempt carries it.
           const activeReqForReason = this.activeRequests.get(requestId)
           if (next && activeReqForReason) activeReqForReason.failoverReason = pick.reason
           this.logger.warn(
@@ -2233,75 +2584,123 @@ class RouterRuntime {
         }
       }
 
-      const quotaExhausted = [...this.quotaExhausted].filter((key) => tried.includes(key))
-      const allAuthError = tried.every((key) => {
-        const [provider] = key.split('/')
-        return blockedProviders.has(provider)
-      })
-      const allQuotaError = tried.length > 0 && quotaExhausted.length === tried.length
-      const allAuthOrQuota = tried.every((key) => {
-        const [provider] = key.split('/')
-        return blockedProviders.has(provider) || quotaExhausted.includes(key)
-      })
-
-      let statusCode = 503
-      let errorCode = 'all_models_failed'
-      let errorType = 'service_unavailable'
-
-      if (tried.length > 0) {
-        if (allAuthError) {
-          statusCode = 401
-          errorCode = 'invalid_api_key'
-          errorType = 'invalid_request_error'
-        } else if (allQuotaError || allAuthOrQuota) {
-          statusCode = 429
-          errorCode = 'insufficient_quota'
-          errorType = 'insufficient_quota'
+      // 📖 Last-resort escape hatch (v2): one final configured model outside
+      // the rotation gets a single shot before the client sees an error.
+      const lastResort = settings.lastResortModel
+      if (!pinned && lastResort && !tried.includes(lastResort.key) && !blockedProviders.has(lastResort.provider) && Date.now() <= deadline) {
+        const resolved = this.resolvePinnedCandidate({ provider: lastResort.provider, model: lastResort.model })
+        if (resolved.candidate) {
+          this.logger.warn(`All candidates failed; trying last-resort model ${lastResort.key}`, { request_id: requestId })
+          trace.last_resort_used = true
+          activeReq.current_model = lastResort.key
+          tried.push(lastResort.key)
+          traceAttempt(trace, lastResort.key, { status: null })
+          const result = stream
+            ? await this.proxyStreamingRequest({ req, res, body, candidate: resolved.candidate, requestId, attemptIndex, protocol, trace, isLastResort: true, anthropicModelName })
+            : await this.proxyJsonRequest({ req, res, body, candidate: resolved.candidate, requestId, attemptIndex, protocol, trace, isLastResort: true })
+          trace.attempts[trace.attempts.length - 1] = {
+            ...trace.attempts[trace.attempts.length - 1],
+            model: lastResort.key,
+            status: result.status ?? null,
+            latency_ms: result.latencyMs ?? null,
+            error: result.reason || null,
+            at: new Date().toISOString(),
+          }
+          if (result.verdict) failedKinds.push(result.verdict.kind)
+          if (result.done) return
         }
       }
 
-      sendError(res, statusCode, `All routed models failed for set: ${set.name}`, errorType, errorCode, requestId, {
-        set: set.name,
-        models_tried: tried,
-        quota_exhausted: quotaExhausted,
-        quota_exhausted_details: this.quotaDetailsForKeys(quotaExhausted),
-      })
+      this.sendAllModelsFailed(res, trace, set, requestId, protocol, { tried, failedKinds, stream })
     } finally {
       this.inFlight -= 1
       this.activeRequests.delete(requestId)
+      const wallMs = Date.now() - started
+      finishTrace(trace, {
+        outcome: trace.outcome || (trace.served_model ? 'served' : 'all_failed'),
+        wallMs,
+        servedModel: trace.served_model,
+        lastResort: trace.last_resort_used,
+        tokens: activeReq.tokens,
+      })
+      this.rememberTrace(trace)
+      this.history.append(this.historyEntryFromTrace(trace, { stream, set: set?.name || null }))
     }
   }
 
-  async proxyJsonRequest({ req, res, body, candidate, requestId, attemptIndex }) {
+  sendAllModelsUnavailable(res, trace, set, requestId, protocol) {
+    const health = this.getModelHealth(set)
+    const quotaExhausted = [...this.quotaExhausted].filter((key) => set.models.some((model) => modelKey(model.provider, model.model) === key))
+    const allAuthError = health.length > 0 && health.every((h) => h.state === 'AUTH_ERROR')
+    const allPaused = health.length > 0 && health.every((h) => h.state === 'QUOTA_PAUSED')
+    const allStaleOrUnsupported = health.length > 0 && health.every((h) => h.state === 'STALE' || h.state === 'UNSUPPORTED')
+    let statusCode = 503
+    if (allAuthError) statusCode = 401
+    else if (allPaused || (quotaExhausted.length === health.length && health.length > 0)) statusCode = 429
+    else if (allStaleOrUnsupported) statusCode = 400
+    const headers = statusCode === 429 ? this.retryAfterHeaders() : {}
+    this.sendProtocolError(res, protocol, statusCode,
+      `All models in set are unavailable: ${set.name}`, requestId,
+      {
+        code: statusCode === 401 ? 'invalid_api_key' : statusCode === 429 ? 'insufficient_quota' : 'all_models_unavailable',
+        headers,
+        payload: { set: set.name, models_tried: [], quota_exhausted: quotaExhausted, quota_exhausted_details: this.quotaDetailsForKeys(quotaExhausted), model_health: health },
+      })
+    void sendUsageTelemetry(this.config, {}, {
+      event: 'app_router_all_down',
+      mode: 'daemon',
+      properties: { set_name: set.name, models_tried: [], quota_exhausted_count: quotaExhausted.length },
+    })
+    finishTrace(trace, { outcome: 'all_failed', wallMs: Date.now() - new Date(trace.at).getTime() })
+  }
+
+  sendAllModelsFailed(res, trace, set, requestId, protocol, { tried, failedKinds, stream }) {
+    // 📖 Status refinement by dominant failure kind (v2): an all-auth failure
+    // is 401 for the client, all-quota is 429 (+ Retry-After), all-
+    // invalid-request means the PAYLOAD is the problem (400).
+    const kinds = failedKinds.length > 0 ? failedKinds : ['unknown']
+    const allSame = kinds.every((k) => k === kinds[0])
+    const statusCode = allSame ? clientStatusForKind(kinds[0]) : 503
+    const headers = statusCode === 429 ? this.retryAfterHeaders() : {}
+    const quotaExhausted = [...this.quotaExhausted].filter((key) => tried.includes(key))
+    // 📖 Keep the v1 client-facing error codes: quota exhaustion is
+    // 'insufficient_quota' (OpenAI convention), auth is 'invalid_api_key'.
+    const clientCode = allSame
+      ? (kinds[0] === FAILURE_KINDS.RATE_LIMIT || kinds[0] === FAILURE_KINDS.QUOTA
+        ? 'insufficient_quota'
+        : kinds[0] === FAILURE_KINDS.AUTH ? 'invalid_api_key' : kinds[0])
+      : 'all_models_failed'
+    this.sendProtocolError(res, protocol, statusCode,
+      `All routed models failed for set: ${set.name}`, requestId,
+      {
+        code: clientCode,
+        headers,
+        payload: {
+          set: set.name,
+          models_tried: tried,
+          failure_kinds: kinds,
+          quota_exhausted: quotaExhausted,
+          quota_exhausted_details: this.quotaDetailsForKeys(quotaExhausted),
+          stream,
+        },
+      })
+  }
+
+  async proxyJsonRequest({ req, res, body, candidate, requestId, attemptIndex, protocol, trace, isLastResort = false }) {
     const key = candidate.key
     const apiKey = this.getApiKeyForProvider(candidate.provider)
-    // 📖 Guard: bail early if provider URL cannot be resolved
     const providerUrl = resolveProviderUrl(candidate.provider)
     if (!providerUrl) {
-      this.markFailure(key, 'provider URL unresolvable')
+      const verdict = classifyFailure({ kind: FAILURE_KINDS.PROVIDER_URL })
+      this.applyFailureVerdict(key, verdict, { detail: 'provider URL unresolvable' })
       this.addRequestLog({ request_id: requestId, model: key, status: 'ERR', latency_ms: null, tokens: 0, failover: attemptIndex > 0, error: 'provider_url_unresolvable' })
-      return { done: false, failoverToNext: true, reason: 'provider_url_unresolvable' }
+      return { done: false, failoverToNext: true, reason: verdict.kind, verdict }
     }
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), this.routerConfig().failover.requestTimeoutMs)
+    const settings = this.failoverSettings()
     const started = performance.now()
-    // 📖 Pre-prompt is injected server-side so every client (OpenAI SDK,
-    // 📖 curl, custom Playground) gets the FCM persona without any client
-    // 📖 change. Non-streaming path.
-    const bodyWithPrePrompt = applyPrePromptToBody(body, this.routerConfig().prePrompt)
-    // 📖 Apply per-provider schema normalization (GLM, Mistral, Codestral).
-    // 📖 Returns the body unchanged for providers without a registered normalizer.
-    const bodyNormalized = normalizeRequestBody(bodyWithPrePrompt, candidate.provider)
-    const upstreamBody = {
-      ...bodyNormalized,
-      model: getApiModelId(candidate.provider, candidate.model),
-      stream: false,
-    }
-    // 📖 Some providers/models fail if we send custom internal params, so strip them
-    if (upstreamBody.add_generation_prompt !== undefined) delete upstreamBody.add_generation_prompt
-    if (upstreamBody.continue_final_message !== undefined) delete upstreamBody.continue_final_message
-    if (upstreamBody.tools?.length === 0) delete upstreamBody.tools
-
+    const upstreamBody = this.buildUpstreamBody(body, candidate, false)
     const clientAbort = attachClientAbort(req, res, controller)
     try {
       const response = await fetch(providerUrl, {
@@ -2315,46 +2714,52 @@ class RouterRuntime {
       })
       clearTimeout(timeout)
       const latencyMs = Math.round(performance.now() - started)
-      const text = await response.text()
+      const text = await readBodyWithTimeout(response, controller, settings.bodyReadTimeoutMs)
       const upstreamMeta = buildUpstreamMeta(response, text, candidate.provider)
 
       if (isLikelyHtmlResponse(response.headers, text)) {
-        this.markFailure(key, 'upstream_html_maintenance', 503, upstreamMeta)
-        this.recordRouterError('upstream_html_maintenance', requestId, { model: key, status: response.status })
+        const verdict = classifyFailure({ kind: FAILURE_KINDS.HTML })
+        this.applyFailureVerdict(key, verdict, { detail: 'upstream html maintenance', statusCode: 503, meta: upstreamMeta })
+        this.recordRouterError('upstream_html_maintenance', requestId, { model: key })
         this.addRequestLog({ request_id: requestId, model: key, status: 503, latency_ms: latencyMs, tokens: 0, failover: attemptIndex > 0, error: 'upstream_html_maintenance' })
-        return { done: false, failoverToNext: true, reason: 'upstream_html_maintenance' }
+        return { done: false, failoverToNext: true, reason: verdict.kind, verdict, status: 503, latencyMs }
       }
 
       if (response.ok) {
         const parsed = parseJsonResult(text)
         if (!parsed.ok || !parsed.value || typeof parsed.value !== 'object') {
-          this.markFailure(key, 'upstream_invalid_json', 502, upstreamMeta)
-          this.recordRouterError('upstream_invalid_json', requestId, { model: key, status: response.status })
+          const verdict = classifyFailure({ kind: FAILURE_KINDS.INVALID_JSON })
+          this.applyFailureVerdict(key, verdict, { detail: 'upstream invalid json', statusCode: 502, meta: upstreamMeta })
+          this.recordRouterError('upstream_invalid_json', requestId, { model: key })
           this.addRequestLog({ request_id: requestId, model: key, status: 502, latency_ms: latencyMs, tokens: 0, failover: attemptIndex > 0, error: 'upstream_invalid_json' })
-          return { done: false, failoverToNext: true, reason: 'upstream_invalid_json' }
+          return { done: false, failoverToNext: true, reason: verdict.kind, verdict, status: 502, latencyMs }
         }
+        // 📖 THE v2 content gate: a 200 only counts as success when the
+        // payload holds real content. Empty choices, embedded error objects
+        // and content-less answers fail over (v1 served those as successes).
+        if (settings.contentValidation !== 'off') {
+          const gate = validateChatCompletionPayload(parsed.value, { mode: settings.contentValidation })
+          if (!gate.ok) {
+            const verdict = classifyFailure({ kind: FAILURE_KINDS[gateReasonToKind(gate.reason)] || FAILURE_KINDS.INVALID_JSON })
+            this.applyFailureVerdict(key, verdict, { detail: `gate: ${gate.reason}${gate.detail ? ` (${gate.detail})` : ''}`, statusCode: 200, meta: upstreamMeta })
+            this.recordRouterError('gate_reject', requestId, { model: key, reason: gate.reason })
+            this.addRequestLog({ request_id: requestId, model: key, status: 200, latency_ms: latencyMs, tokens: 0, failover: attemptIndex > 0, error: `gate_${gate.reason}` })
+            return { done: false, failoverToNext: true, reason: verdict.kind, verdict, status: 200, latencyMs }
+          }
+        }
+
         this.markSuccess(key, latencyMs)
         const usage = extractUsage(parsed.value)
         this.tokenTracker.record(candidate.provider, candidate.model, usage)
-        // 📖 Runtime telemetry (t3): track every successful routed request so the
-        // 📖 real-world score can rank models by what *actually* works.
-        this.recordRuntimeCall({
-          providerKey: candidate.provider,
-          modelId: candidate.model,
-          success: true,
-          latencyMs,
-          usage,
-        })
+        this.recordRuntimeCall({ providerKey: candidate.provider, modelId: candidate.model, success: true, latencyMs, usage })
         this.totalRequestsRouted += 1
-        // 📖 Fire app_router_use telemetry once per 10 routed requests
+        trace.served_model = key
+        trace.tokens = usage?.total_tokens || 0
         if (this.totalRequestsRouted % 10 === 0) {
           void sendUsageTelemetry(this.config, {}, {
             event: 'app_router_use',
             mode: 'daemon',
-            properties: {
-              total_requests: this.totalRequestsRouted,
-              active_set: this.routerConfig().activeSet,
-            },
+            properties: { total_requests: this.totalRequestsRouted, active_set: this.routerConfig().activeSet },
           })
         }
         this.addRequestLog({
@@ -2366,121 +2771,110 @@ class RouterRuntime {
           failover: attemptIndex > 0,
         })
         this.logger.info(`Routed to ${key} - ${latencyMs}ms`, { request_id: requestId, status: response.status })
-        // 📖 Fix #124: normalize malformed tool_calls (finish_reason tool_calls without tool_calls array)
+        // 📖 Record the winning attempt BEFORE the response head is written so
+        // the decision header shows the final status of this model.
+        const winningAttempt = trace.attempts[trace.attempts.length - 1]
+        if (winningAttempt) {
+          winningAttempt.status = response.status
+          winningAttempt.latency_ms = latencyMs
+        }
+        // 📖 Fix #124: normalize malformed tool_calls (finish_reason
+        // tool_calls without a tool_calls array).
         let responseText = text
         try {
-          if (normalizeToolCallsResponse(parsed.value)) {
+          if (protocol === 'anthropic') {
+            const translated = translateOpenAIToAnthropicResponse(parsed.value, { model: key })
+            responseText = translated.ok ? JSON.stringify(translated.body) : text
+          } else if (normalizeToolCallsResponse(parsed.value)) {
             responseText = JSON.stringify(parsed.value)
           }
         } catch {}
         if (!res.writableEnded) {
           res.writeHead(response.status, {
             ...headerEntries(response.headers),
-            'x-fcm-router-model': key,
-            'x-request-id': requestId,
+            ...this.decisionHeaders(trace),
+            ...(isLastResort ? { 'x-fcm-v2-last-resort': 'true' } : {}),
           })
           res.end(responseText)
         }
-        return { done: true }
+        return { done: true, status: response.status, latencyMs }
       }
 
-      if (AUTH_STATUS_CODES.has(response.status)) {
-        this.markAuthError(key, `HTTP ${response.status}`)
-        this.addRequestLog({ request_id: requestId, model: key, status: response.status, latency_ms: latencyMs, tokens: 0, failover: attemptIndex > 0, error: 'auth_error' })
-        this.recordRuntimeCall({
-          providerKey: candidate.provider, modelId: candidate.model,
-          success: false, latencyMs, error: `auth_${response.status}`,
-        })
-        return { done: false, failoverToNext: true, reason: `auth_${response.status}`, authFailure: true }
-      }
-
-      if (RETRYABLE_STATUS_CODES.has(response.status)) {
-        this.markFailure(key, `HTTP ${response.status}`, response.status, upstreamMeta)
-        this.addRequestLog({ request_id: requestId, model: key, status: response.status, latency_ms: latencyMs, tokens: 0, failover: attemptIndex > 0, error: `http_${response.status}` })
-        this.recordRuntimeCall({
-          providerKey: candidate.provider, modelId: candidate.model,
-          success: false, latencyMs, error: `http_${response.status}`,
-        })
-        return { done: false, failoverToNext: true, reason: `http_${response.status}` }
-      }
-
-      // 📖 Provide failover fallback for non-retryable errors from the provider (like 400 Bad Request)
-      // when they are caused by format idiosyncrasies (e.g. empty tools array that another model might accept)
-      if (response.status >= 400 && response.status < 500) {
-        // 📖 Telemetry keeps structural fields only: upstream response bodies
-        // 📖 must never leave the machine (they can embed user code/prompts).
-        this.recordRouterError(`http_${response.status}`, requestId, { provider: candidate.provider, model: key, status: response.status })
-        this.markFailure(key, `HTTP ${response.status}`)
-        this.addRequestLog({ request_id: requestId, model: key, status: response.status, latency_ms: latencyMs, tokens: 0, failover: attemptIndex > 0, error: `http_${response.status}` })
-        this.recordRuntimeCall({
-          providerKey: candidate.provider, modelId: candidate.model,
-          success: false, latencyMs, error: `http_${response.status}`,
-        })
-        return { done: false, failoverToNext: true, reason: `http_${response.status}` }
-      }
-
-      if (!res.writableEnded) {
-        res.writeHead(response.status, {
-          ...headerEntries(response.headers),
-          'x-fcm-router-model': key,
-          'x-request-id': requestId,
-        })
-        res.end(text)
-      }
-      return { done: true }
+      const verdict = classifyFailure({ status: response.status, retryAfterMs: upstreamMeta.retryAfterMs })
+      this.applyFailureVerdict(key, verdict, {
+        detail: `HTTP ${response.status}`,
+        statusCode: response.status,
+        meta: upstreamMeta,
+      })
+      this.addRequestLog({ request_id: requestId, model: key, status: response.status, latency_ms: latencyMs, tokens: 0, failover: attemptIndex > 0, error: verdict.kind })
+      this.recordRuntimeCall({
+        providerKey: candidate.provider, modelId: candidate.model,
+        success: false, latencyMs, error: verdict.kind,
+      })
+      this.recordRouterError(verdict.kind, requestId, { model: key, status: response.status })
+      return { done: false, failoverToNext: verdict.failover, reason: verdict.kind, verdict, status: response.status, latencyMs }
     } catch (error) {
+      // 📖 Blame attribution (v2): a client disconnect is never an upstream
+      // failure and must not damage the model's health.
       if (clientAbort.aborted) {
         this.logger.info(`Client disconnected before upstream response from ${key}`, { request_id: requestId })
-        return { done: true }
+        trace.outcome = 'client_aborted'
+        return { done: true, reason: 'client_aborted' }
       }
-      const reason = error.name === 'AbortError' ? 'timeout' : (error.message || String(error))
-      this.markFailure(key, reason)
-      this.recordRouterError('upstream_transport_error', requestId, { model: key, reason })
-      this.addRequestLog({ request_id: requestId, model: key, status: 'ERR', latency_ms: null, tokens: 0, failover: attemptIndex > 0, error: reason })
-      return { done: false, failoverToNext: true, reason }
+      const isBodyReadTimeout = error?.name === 'BodyReadTimeoutError'
+      const verdict = isBodyReadTimeout || error.name === 'AbortError'
+        ? classifyFailure({ kind: FAILURE_KINDS.TIMEOUT })
+        : classifyFailure({ kind: FAILURE_KINDS.NETWORK })
+      const detail = isBodyReadTimeout ? 'body read timeout' : (error.name === 'AbortError' ? 'timeout' : (error.message || String(error)))
+      this.applyFailureVerdict(key, verdict, { detail })
+      this.recordRouterError('upstream_transport_error', requestId, { model: key, reason: detail })
+      this.addRequestLog({ request_id: requestId, model: key, status: 'ERR', latency_ms: null, tokens: 0, failover: attemptIndex > 0, error: detail })
+      return { done: false, failoverToNext: true, reason: verdict.kind, verdict }
     } finally {
       clearTimeout(timeout)
       clientAbort.dispose()
     }
   }
 
-  async proxyStreamingRequest({ req, res, body, candidate, requestId, attemptIndex }) {
+  async proxyStreamingRequest({ req, res, body, candidate, requestId, attemptIndex, protocol, trace, isLastResort = false, anthropicModelName = null }) {
     const key = candidate.key
     const activeReq = this.activeRequests.get(requestId)
     if (activeReq) {
       activeReq.current_model = key
-      if (activeReq.last_activity_at) activeReq.last_activity_at = Date.now()
+      activeReq.last_activity_at = Date.now()
     }
     const apiKey = this.getApiKeyForProvider(candidate.provider)
-    // 📖 Guard: bail early if provider URL cannot be resolved
     const providerUrl = resolveProviderUrl(candidate.provider)
     if (!providerUrl) {
-      this.markFailure(key, 'provider URL unresolvable')
+      const verdict = classifyFailure({ kind: FAILURE_KINDS.PROVIDER_URL })
+      this.applyFailureVerdict(key, verdict, { detail: 'provider URL unresolvable' })
       this.addRequestLog({ request_id: requestId, model: key, status: 'ERR', latency_ms: null, tokens: 0, failover: attemptIndex > 0, error: 'provider_url_unresolvable', stream: true })
-      return { done: false, failoverToNext: true, reason: 'provider_url_unresolvable' }
+      return { done: false, failoverToNext: true, reason: verdict.kind, verdict }
     }
     const controller = new AbortController()
     const started = performance.now()
-    // 📖 Pre-prompt is injected server-side so every client (OpenAI SDK,
-    // 📖 curl, custom Playground) gets the FCM persona without any client
-    // 📖 change. Streaming path.
-    const bodyWithPrePrompt = applyPrePromptToBody(body, this.routerConfig().prePrompt)
-    // 📖 Apply per-provider schema normalization (GLM, Mistral, Codestral).
-    // 📖 Returns the body unchanged for providers without a registered normalizer.
-    const bodyNormalized = normalizeRequestBody(bodyWithPrePrompt, candidate.provider)
-    const upstreamBody = {
-      ...bodyNormalized,
-      model: getApiModelId(candidate.provider, candidate.model),
-      stream: true,
-    }
-    // 📖 Some providers/models fail if we send custom internal params, so strip them
-    if (upstreamBody.add_generation_prompt !== undefined) delete upstreamBody.add_generation_prompt
-    if (upstreamBody.continue_final_message !== undefined) delete upstreamBody.continue_final_message
-    if (upstreamBody.tools?.length === 0) delete upstreamBody.tools
-
+    const upstreamBody = this.buildUpstreamBody(body, candidate, true)
+    // 📖 Anthropic clients receive Anthropic SSE events: every byte written
+    // to the client goes through the transformer sink instead of raw.
+    const sink = protocol === 'anthropic'
+      ? createAnthropicStreamTransformer({ model: anthropicModelName || key })
+      : null
     const timeout = setTimeout(() => controller.abort(), this.routerConfig().failover.requestTimeoutMs)
     let sentToClient = false
     const clientAbort = attachClientAbort(req, res, controller)
+
+    const writeToClient = (text) => {
+      if (res.writableEnded) return
+      if (sink) res.write(sink.write(text))
+      else res.write(Buffer.isBuffer(text) ? text : Buffer.from(text))
+    }
+    const endClientStream = () => {
+      try {
+        if (sink && !res.writableEnded) res.write(sink.end())
+      } catch {}
+      try { if (!res.writableEnded) res.end() } catch {}
+    }
+
     try {
       const response = await fetch(providerUrl, {
         method: 'POST',
@@ -2495,164 +2889,205 @@ class RouterRuntime {
       const latencyMs = Math.round(performance.now() - started)
       const upstreamMeta = buildUpstreamMeta(response, '', candidate.provider)
       if (isLikelyHtmlResponse(response.headers)) {
-        this.markFailure(key, 'upstream_html_maintenance', 503, upstreamMeta)
-        this.recordRouterError('upstream_html_maintenance', requestId, { model: key, status: response.status, stream: true })
+        const verdict = classifyFailure({ kind: FAILURE_KINDS.HTML })
+        this.applyFailureVerdict(key, verdict, { detail: 'upstream html maintenance', statusCode: 503, meta: upstreamMeta })
+        this.recordRouterError('upstream_html_maintenance', requestId, { model: key, stream: true })
         this.addRequestLog({ request_id: requestId, model: key, status: 503, latency_ms: latencyMs, tokens: 0, failover: attemptIndex > 0, error: 'upstream_html_maintenance', stream: true })
-        return { done: false, failoverToNext: true, reason: 'upstream_html_maintenance' }
+        return { done: false, failoverToNext: true, reason: verdict.kind, verdict, status: 503, latencyMs }
       }
       if (!response.ok) {
-        if (AUTH_STATUS_CODES.has(response.status)) {
-          this.markAuthError(key, `HTTP ${response.status}`)
-          this.addRequestLog({ request_id: requestId, model: key, status: response.status, latency_ms: latencyMs, tokens: 0, failover: attemptIndex > 0, error: 'auth_error', stream: true })
-          return { done: false, failoverToNext: true, reason: `auth_${response.status}`, authFailure: true }
-        }
-        if (RETRYABLE_STATUS_CODES.has(response.status)) {
-          this.markFailure(key, `HTTP ${response.status}`, response.status, upstreamMeta)
-          this.addRequestLog({ request_id: requestId, model: key, status: response.status, latency_ms: latencyMs, tokens: 0, failover: attemptIndex > 0, error: `http_${response.status}`, stream: true })
-          return { done: false, failoverToNext: true, reason: `http_${response.status}` }
-        }
-
-        // 📖 Provide failover fallback for non-retryable errors from the provider (like 400 Bad Request)
-        // when they are caused by format idiosyncrasies (e.g. empty tools array that another model might accept)
-        if (response.status >= 400 && response.status < 500) {
-          // 📖 Telemetry keeps structural fields only: upstream response bodies
-          // 📖 must never leave the machine (they can embed user code/prompts).
-          this.recordRouterError(`http_${response.status}`, requestId, { provider: candidate.provider, model: key, status: response.status, stream: true })
-          this.markFailure(key, `HTTP ${response.status}`)
-          this.addRequestLog({ request_id: requestId, model: key, status: response.status, latency_ms: latencyMs, tokens: 0, failover: attemptIndex > 0, error: `http_${response.status}`, stream: true })
-          return { done: false, failoverToNext: true, reason: `http_${response.status}` }
-        }
-
-        if (!res.writableEnded) {
-          res.writeHead(response.status, {
-            ...headerEntries(response.headers),
-            'x-fcm-router-model': key,
-            'x-request-id': requestId,
-          })
-          try { res.end(await response.text()) } catch {}
-        }
-        return { done: true }
+        const verdict = classifyFailure({ status: response.status, retryAfterMs: upstreamMeta.retryAfterMs })
+        this.applyFailureVerdict(key, verdict, { detail: `HTTP ${response.status}`, statusCode: response.status, meta: upstreamMeta })
+        this.recordRouterError(verdict.kind, requestId, { model: key, status: response.status, stream: true })
+        this.addRequestLog({ request_id: requestId, model: key, status: response.status, latency_ms: latencyMs, tokens: 0, failover: attemptIndex > 0, error: verdict.kind, stream: true })
+        return { done: false, failoverToNext: verdict.failover, reason: verdict.kind, verdict, status: response.status, latencyMs }
       }
 
       const reader = response.body?.getReader()
       if (!reader) {
-        this.markFailure(key, 'empty stream')
-        return { done: false, failoverToNext: true, reason: 'empty_stream' }
+        const verdict = classifyFailure({ kind: FAILURE_KINDS.EMPTY_STREAM })
+        this.applyFailureVerdict(key, verdict, { detail: 'empty stream' })
+        this.addRequestLog({ request_id: requestId, model: key, status: 'ERR', latency_ms: null, tokens: 0, failover: attemptIndex > 0, error: 'empty_stream', stream: true })
+        return { done: false, failoverToNext: true, reason: verdict.kind, verdict, status: 200, latencyMs }
       }
 
-      const firstChunk = await this.readStreamChunkWithTimeout(reader)
-      if (firstChunk.done || !firstChunk.value) {
-        this.markFailure(key, 'stream ended before first chunk')
-        return { done: false, failoverToNext: true, reason: 'empty_stream' }
-      }
-      // 📖 Guard: ensure value is a valid buffer source before conversion
-      const firstChunkBuffer = Buffer.isBuffer(firstChunk.value) ? firstChunk.value : Buffer.from(firstChunk.value)
-      if (isLikelyHtmlText(firstChunkBuffer.toString('utf8'))) {
-        this.markFailure(key, 'upstream_html_maintenance', 503, upstreamMeta)
-        this.recordRouterError('upstream_html_maintenance', requestId, { model: key, status: response.status, stream: true })
-        return { done: false, failoverToNext: true, reason: 'upstream_html_maintenance' }
+      // 📖 v2 readiness gate: hold early chunks until the tracker sees useful
+      // content, an upstream error frame (fail over BEFORE the client gets
+      // bytes), or the hold cap overflows (weird provider: pass through).
+      const tracker = createStreamReadinessTracker()
+      const holdBuffer = []
+      let forwarded = false
+      let forwardedChars = 0
+      let upstreamErrorAfterForward = false
+
+      const flushHold = () => {
+        // 📖 Record this attempt as the serving one before the head is
+        // written so the decision header reflects the streaming model.
+        const winningAttempt = trace.attempts[trace.attempts.length - 1]
+        if (winningAttempt) {
+          winningAttempt.status = 200
+          winningAttempt.latency_ms = latencyMs
+        }
+        // 📖 Issue #137: when a previous model already sent partial data the
+        // headers are on the wire; append with an SSE comment marker instead.
+        if (!res.headersSent) {
+          res.writeHead(200, {
+            ...headerEntries(response.headers),
+            // 📖 A forwarded stream is SSE by definition: override whatever
+            // content-type the upstream declared (json/html/...).
+            'Content-Type': 'text/event-stream',
+            'Cache-Control': 'no-cache',
+            Connection: 'keep-alive',
+            ...this.decisionHeaders(trace),
+            ...(isLastResort ? { 'x-fcm-v2-last-resort': 'true' } : {}),
+          })
+        } else {
+          try { res.write(`: fcm-router-failover-from=${key}\n\n`) } catch {}
+        }
+        for (const text of holdBuffer) {
+          writeToClient(text)
+          forwardedChars += text.length
+        }
+        holdBuffer.length = 0
+        sentToClient = true
+        forwarded = true
       }
 
-      if (res.writableEnded) return { done: true }
-      // 📖 Issue #137: when the previous model sent partial data, headers are
-      // 📖 already on the wire — re-calling writeHead throws ERR_HTTP_HEADERS_SENT.
-      // 📖 On a mid-stream failover we just append chunks to the existing response.
-      if (!res.headersSent) {
-        res.writeHead(response.status, {
-          ...headerEntries(response.headers),
-          'x-fcm-router-model': key,
-          'x-request-id': requestId,
-        })
-      } else {
-        // 📖 Reflect the new model in trailer-ish debug headers. Node won't let
-        // 📖 us add new headers after send, but we still update x-fcm-router-model
-        // 📖 semantics via a leading SSE comment so clients can see the switch.
-        try {
-          res.write(`: fcm-router-failover-from=${key}\n\n`)
-        } catch { /* best-effort */ }
-      }
-      sentToClient = true
-      res.write(firstChunkBuffer)
-
-      while (!res.writableEnded) {
+      while (true) {
         const chunk = await this.readStreamChunkWithTimeout(reader)
-        if (chunk.done || !chunk.value) break
-        // 📖 Guard: ensure chunk value is safe for Buffer conversion
-        const buf = Buffer.isBuffer(chunk.value) ? chunk.value : Buffer.from(chunk.value)
-        res.write(buf)
+        const text = chunk.done || !chunk.value
+          ? null
+          : (Buffer.isBuffer(chunk.value) ? chunk.value.toString('utf8') : Buffer.from(chunk.value).toString('utf8'))
+        if (text === null) break
+        tracker.observe(text)
         if (activeReq) {
-          if (activeReq.last_activity_at) activeReq.last_activity_at = Date.now()
-          activeReq.tokens += 1 // Increment a counter to show progress
+          activeReq.last_activity_at = Date.now()
+          activeReq.tokens += 1
+        }
+        if (!forwarded) {
+          if (tracker.errorPayload) {
+            try { controller.abort() } catch {}
+            const verdict = classifyFailure({ kind: FAILURE_KINDS.ERROR_PAYLOAD })
+            this.applyFailureVerdict(key, verdict, { detail: 'stream error payload before content', statusCode: 200, meta: upstreamMeta })
+            this.recordRouterError('gate_reject', requestId, { model: key, stream: true, reason: 'error_payload' })
+            return { done: false, failoverToNext: true, reason: verdict.kind, verdict, status: 200, latencyMs }
+          }
+          if (tracker.useful) {
+            holdBuffer.push(text)
+            flushHold()
+          } else if (tracker.bytesSeen > tracker.maxHoldBytes) {
+            // 📖 Huge non-JSON preamble: pass it through rather than stall.
+            holdBuffer.push(text)
+            flushHold()
+          } else if (isLikelyHtmlText(text)) {
+            try { controller.abort() } catch {}
+            const verdict = classifyFailure({ kind: FAILURE_KINDS.HTML })
+            this.applyFailureVerdict(key, verdict, { detail: 'stream html maintenance', statusCode: 503, meta: upstreamMeta })
+            return { done: false, failoverToNext: true, reason: verdict.kind, verdict, status: 503, latencyMs }
+          } else {
+            holdBuffer.push(text)
+          }
+        } else {
+          writeToClient(text)
+          forwardedChars += text.length
+          if (tracker.errorPayload) {
+            // 📖 Upstream errored AFTER real content: keep the partial output,
+            // close cleanly, and record a real failure (v1 marked success).
+            upstreamErrorAfterForward = true
+            break
+          }
         }
       }
 
+      if (!forwarded) {
+        // 📖 The stream closed without ever producing useful content. v1 only
+        // caught the zero-chunk case; the gate also fails over a stream that
+        // sent only framing garbage. Nothing reached the client, so failover
+        // is safe.
+        try { controller.abort() } catch {}
+        const verdict = classifyFailure({ kind: FAILURE_KINDS.EMPTY_STREAM })
+        this.applyFailureVerdict(key, verdict, { detail: `stream closed without content (${tracker.describe()})`, statusCode: 200, meta: upstreamMeta })
+        this.recordRouterError('gate_reject', requestId, { model: key, stream: true, reason: 'empty_stream' })
+        return { done: false, failoverToNext: true, reason: verdict.kind, verdict, status: 200, latencyMs }
+      }
+
+      if (upstreamErrorAfterForward) {
+        const verdict = classifyFailure({ kind: FAILURE_KINDS.ERROR_PAYLOAD })
+        this.applyFailureVerdict(key, verdict, { detail: 'stream error payload after content', statusCode: 200, meta: upstreamMeta })
+        endClientStream()
+        return { done: true, status: 200, latencyMs }
+      }
+
       this.markSuccess(key, latencyMs)
+      const completionTokens = estimateTokens(forwardedChars)
+      this.tokenTracker.record(candidate.provider, candidate.model, {
+        prompt_tokens: 0,
+        completion_tokens: completionTokens,
+        total_tokens: completionTokens,
+      })
+      this.recordRuntimeCall({
+        providerKey: candidate.provider, modelId: candidate.model,
+        success: true, latencyMs,
+        usage: { prompt_tokens: 0, completion_tokens: completionTokens, total_tokens: completionTokens },
+      })
       this.totalRequestsRouted += 1
+      trace.served_model = key
+      trace.tokens = completionTokens
       this.addRequestLog({
         request_id: requestId,
         model: key,
-        status: response.status,
+        status: 200,
         latency_ms: latencyMs,
-        tokens: 0,
+        tokens: completionTokens,
         failover: attemptIndex > 0,
         stream: true,
       })
-      if (!res.writableEnded) res.end()
-      return { done: true }
+      endClientStream()
+      return { done: true, status: 200, latencyMs }
     } catch (error) {
       try { controller.abort() } catch {}
       if (clientAbort.aborted) {
         this.logger.info(`Client disconnected during streaming response from ${key}`, { request_id: requestId })
-        return { done: true }
+        trace.outcome = 'client_aborted'
+        endClientStream()
+        return { done: true, reason: 'client_aborted' }
       }
-      const reason = error.name === 'AbortError' ? 'timeout' : (error.message || String(error))
-      // 📖 Issue #137: stream-stall timeouts get a special tag so we can
-      // 📖 distinguish them from generic upstream errors below. Only stalls
-      // 📖 should trigger failover after a partial response — generic errors
-      // 📖 (malformed JSON, network reset, etc.) usually mean the partial
-      // 📖 data is invalid anyway, so closing cleanly is safer.
-      const isStall = reason === 'stream_stall_timeout' || reason === 'timeout'
-      this.markFailure(key, reason)
-      if (reason !== 'timeout') {
-        this.recordRouterError('upstream_stream_error', requestId, { model: key, reason, partial: sentToClient })
-      } else {
-        this.recordRouterError('timeout', requestId, { model: key, reason, partial: sentToClient })
-      }
-      this.addRequestLog({ request_id: requestId, model: key, status: 'ERR', latency_ms: null, tokens: 0, failover: attemptIndex > 0, error: reason, stream: true })
+      const isStall = error?.message === 'stream_stall_timeout' || error.name === 'AbortError'
+      const kind = error?.message === 'stream_stall_timeout'
+        ? FAILURE_KINDS.STREAM_STALL
+        : (error.name === 'AbortError' ? FAILURE_KINDS.TIMEOUT : FAILURE_KINDS.NETWORK)
+      const detail = error?.message === 'stream_stall_timeout'
+        ? 'stream stall timeout'
+        : (error.name === 'AbortError' ? 'timeout' : (error.message || String(error)))
+      const verdict = classifyFailure({ kind })
+      this.applyFailureVerdict(key, verdict, { detail })
+      this.recordRouterError(isStall ? 'timeout' : 'upstream_stream_error', requestId, { model: key, reason: detail, partial: sentToClient, stream: true })
+      this.addRequestLog({ request_id: requestId, model: key, status: 'ERR', latency_ms: null, tokens: 0, failover: attemptIndex > 0, error: detail, stream: true })
       if (sentToClient) {
         if (isStall) {
-          // 📖 Issue #137: failover even after a partial response. Emit a
-          // 📖 synthetic SSE error event in OpenAI format so clients know the
-          // 📖 stream was truncated and that the router is failing over. The
-          // 📖 outer retry loop will then try the next model on a fresh
-          // 📖 upstream connection; its chunks are appended to the same
-          // 📖 response object so the client sees one continuous stream.
-          this.logger.warn(`Stream stall after partial response from ${key}, attempting failover`, { request_id: requestId, reason })
+          // 📖 Issue #137: fail over even after partial output. OpenAI
+          // clients get a synthetic caution delta; Anthropic clients get an
+          // SSE error event before the stream closes.
+          this.logger.warn(`Stream stall after partial response from ${key}, attempting failover`, { request_id: requestId, reason: detail })
           if (!res.writableEnded) {
             try {
-              // 📖 Issue #137: failover even after a partial response.
-              // 📖 We use a regular chat delta instead of an error payload so
-              // 📖 that clients (which often abort on "error") stay connected.
-              const failoverMsg = `\n\n> [!CAUTION]\n> Stream truncated by router due to upstream ${reason}; failing over to next model.\n\n`
-              const deltaPayload = JSON.stringify({
-                choices: [{
-                  index: 0,
-                  delta: { content: failoverMsg },
-                  finish_reason: null,
-                }],
-              })
-              res.write(`data: ${deltaPayload}\n\n`)
+              if (sink) {
+                res.write(sink.write(`data: ${JSON.stringify({ error: { message: `stream truncated by router (${detail}); failing over to next model`, type: 'api_error' } })}\n\n`))
+              } else {
+                const failoverMsg = `\n\n> [!CAUTION]\n> Stream truncated by router due to upstream ${detail}; failing over to next model.\n\n`
+                res.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: failoverMsg }, finish_reason: null }] })}\n\n`)
+              }
             } catch { /* best-effort */ }
           }
-          return { done: false, failoverToNext: true, reason: `stream_stall_${reason}` }
+          return { done: false, failoverToNext: true, reason: `stream_stall`, verdict }
         }
-        // 📖 Non-stall errors after partial output: keep existing behaviour
-        // 📖 (close cleanly, no failover) to avoid sending malformed data.
-        this.logger.warn(`Streaming failure after partial response from ${key}`, { request_id: requestId, reason })
-        try { if (!res.writableEnded) res.end() } catch {}
+        // 📖 Non-stall errors after partial output: close cleanly, no
+        // failover, to avoid sending malformed data (v1 behavior kept).
+        this.logger.warn(`Streaming failure after partial response from ${key}`, { request_id: requestId, reason: detail })
+        endClientStream()
         return { done: true }
       }
-      return { done: false, failoverToNext: true, reason }
+      return { done: false, failoverToNext: true, reason: verdict.kind, verdict }
     } finally {
       clearTimeout(timeout)
       clientAbort.dispose()
@@ -2675,6 +3110,41 @@ class RouterRuntime {
         timeout = setTimeout(() => reject(new Error('stream_stall_timeout')), timeoutMs)
       }),
     ])
+  }
+
+  // ─── Anthropic /v1/messages (v2 protocol support) ─────────────────────────
+
+  async handleAnthropicMessages(req, res, requestId) {
+    if (!isAuthorizedForV1(req)) {
+      sendJson(res, 401, anthropicErrorPayload('authentication_error', 'Missing or invalid router token'), { 'x-request-id': requestId })
+      return
+    }
+    let body
+    try {
+      body = await readJsonBody(req)
+    } catch (error) {
+      if (error.code === 'BODY_TOO_LARGE') {
+        sendJson(res, 413, anthropicErrorPayload('request_too_large', 'Request body too large'), { 'x-request-id': requestId })
+        return
+      }
+      sendJson(res, 400, anthropicErrorPayload('invalid_request_error', 'Invalid JSON body'), { 'x-request-id': requestId })
+      return
+    }
+    const translated = translateAnthropicToOpenAI(body)
+    if (!translated.ok) {
+      sendJson(res, 400, anthropicErrorPayload('invalid_request_error', translated.error), { 'x-request-id': requestId })
+      return
+    }
+    const openaiBody = { ...translated.body, stream: body.stream === true }
+    await this.routeRequest({
+      req,
+      res,
+      body: openaiBody,
+      setName: null,
+      requestId,
+      protocol: 'anthropic',
+      anthropicModelName: typeof body.model === 'string' ? body.model : null,
+    })
   }
 
   async handleSetsRequest(req, res, url, requestId) {
@@ -3022,6 +3492,12 @@ class RouterRuntime {
     const requestId = typeof rawRequestId === 'string' && rawRequestId.trim()
       ? rawRequestId.trim().slice(0, 64)
       : `req-${randomUUID()}`
+    applyCors(req, res)
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204)
+      res.end()
+      return
+    }
     // 📖 DNS-rebinding guard: reject requests whose Host header is not the
     // 📖 loopback (or the configured FCM_HOST) before any routing happens.
     if (!isAllowedHostHeader(req.headers.host, this.port, this.boundHost)) {
@@ -3478,6 +3954,80 @@ class RouterRuntime {
         serveWebStaticFile(res, url.pathname, requestId)
         return
       }
+      // ─── Anthropic-compatible routing surface (v2) ──────────────────────
+      if (url.pathname === '/v1/messages') {
+        if (req.method !== 'POST') {
+          sendJson(res, 405, anthropicErrorPayload('invalid_request_error', 'Method not allowed, use POST'), { 'x-request-id': requestId })
+          return
+        }
+        await this.handleAnthropicMessages(req, res, requestId)
+        return
+      }
+
+      // ─── Router v2 dashboard API (beta overlays + web page) ──────────────
+      if (req.method === 'GET' && url.pathname === '/api/router-v2/status') {
+        sendJson(res, 200, { ...this.statusPayload(), router: 'v2', beta: true }, { 'x-request-id': requestId })
+        return
+      }
+      if (req.method === 'GET' && url.pathname === '/api/router-v2/stats') {
+        sendJson(res, 200, { ...this.statsPayload(), router: 'v2', beta: true }, { 'x-request-id': requestId })
+        return
+      }
+      if (req.method === 'GET' && url.pathname === '/api/router-v2/history') {
+        const limitRaw = Number.parseInt(url.searchParams.get('limit') || '50', 10)
+        const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(1, limitRaw), 500) : 50
+        sendJson(res, 200, { entries: this.history.recent(limit), stats: this.history.stats() }, { 'x-request-id': requestId })
+        return
+      }
+      if (req.method === 'GET' && url.pathname === '/api/router-v2/traces') {
+        const limitRaw = Number.parseInt(url.searchParams.get('limit') || '20', 10)
+        const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(1, limitRaw), 50) : 20
+        sendJson(res, 200, { traces: this.recentTraces.slice(-limit).reverse() }, { 'x-request-id': requestId })
+        return
+      }
+      if (url.pathname === '/api/router-v2/history' && req.method === 'DELETE') {
+        if (!isSameOriginOrLocal(req)) {
+          sendError(res, 403, 'Forbidden cross-origin request', 'invalid_request_error', 'forbidden_origin', requestId)
+          return
+        }
+        this.history.clear()
+        this.recentTraces = []
+        sendJson(res, 200, { ok: true }, { 'x-request-id': requestId })
+        return
+      }
+      if (url.pathname === '/api/router-v2/test' && req.method === 'POST') {
+        if (!isSameOriginOrLocal(req)) {
+          sendError(res, 403, 'Forbidden cross-origin request', 'invalid_request_error', 'forbidden_origin', requestId)
+          return
+        }
+        const body = await readJsonBody(req)
+        const provider = typeof body.provider === 'string' ? body.provider.trim() : ''
+        const model = typeof body.model === 'string' ? body.model.trim() : ''
+        if (!provider || !model) {
+          sendError(res, 400, 'Both `provider` and `model` are required', 'invalid_request_error', 'missing_model_fields', requestId)
+          return
+        }
+        const { testModelViaRouter } = await import('./router-v2/bench.js')
+        const result = await testModelViaRouter({ port: this.port, provider, model })
+        sendJson(res, 200, result, { 'x-request-id': requestId })
+        return
+      }
+      if (req.method === 'GET' && url.pathname === '/api/router-v2/events') {
+        if (!this.tryOpenSseConnection(req, res, requestId)) return
+        res.writeHead(200, {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache',
+          Connection: 'keep-alive',
+          'x-request-id': requestId,
+        })
+        res.flushHeaders?.()
+        res.write(': connected\n\n')
+        res.write(`event: hello\ndata: ${JSON.stringify(this.statusPayload())}\n\n`)
+        this.sseClients.add(res)
+        req.on('close', () => this.sseClients.delete(res))
+        return
+      }
+
       if (url.pathname === '/v1/chat/completions' || url.pathname.match(/^\/v1\/sets\/[^/]+\/chat\/completions$/)) {
         if (req.method !== 'POST') {
           sendError(res, 405, 'Method not allowed', 'invalid_request_error', 'method_not_allowed', requestId, { allowed: ['POST'] })
@@ -3556,6 +4106,7 @@ class RouterRuntime {
     this.shuttingDown = true
     this.logger.info('Router daemon stopping')
     if (this.probeTimer) clearInterval(this.probeTimer)
+    if (this.probeWatchdog) clearInterval(this.probeWatchdog)
     if (this.configReloadTimer) clearInterval(this.configReloadTimer)
     if (this.tokenFlushTimer) clearInterval(this.tokenFlushTimer)
     if (this.probeCacheFlushTimer) clearInterval(this.probeCacheFlushTimer)
@@ -3566,6 +4117,8 @@ class RouterRuntime {
       await sleep(100)
     }
     this.tokenTracker.flush({ force: true })
+    this.breakers.flush()
+    this.history.flush()
     flushProbeCache()  // 📖 t1: persist any pending probe-cache deltas before exit
     if (this.runtimeTelemetryDirty) flushRuntimeTelemetryStore()  // 📖 t3
     try { this.server?.close() } catch {}
@@ -3755,7 +4308,7 @@ export async function buildDefaultRouterSet(config = {}, maxModels, options = {}
   }
 }
 
-export function createRouterRuntimeForTest({ config, port = 0, logger = null, tokenPath = ROUTER_TOKENS_PATH } = {}) {
+export function createRouterRuntimeForTest({ config, port = 0, logger = null, tokenPath = ROUTER_TOKENS_PATH, breakersPath = null, historyPath = null } = {}) {
   const testLogger = logger || {
     level: 'error',
     error() {},
@@ -3767,12 +4320,19 @@ export function createRouterRuntimeForTest({ config, port = 0, logger = null, to
   // 📖 fake providers without spawning a daemon or touching user token files.
   // 📖 Router config persistence is disabled here so set/probe-mode endpoint
   // 📖 tests cannot write fixture router sets into ~/.free-coding-models.json.
+  // 📖 v2: breaker/history state also lands in unique tmp files, otherwise
+  // 📖 tests would inherit the machine's real persisted breaker state.
+  const testId = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`
   return new RouterRuntime({
     config: config || {},
     port,
     logger: testLogger,
     tokenPath,
     persistConfig: false,
+    paths: {
+      breakers: breakersPath || join(tmpdir(), `fcm-router-test-breakers-${testId}.json`),
+      history: historyPath || join(tmpdir(), `fcm-router-test-history-${testId}.json`),
+    },
   })
 }
 
@@ -3989,9 +4549,47 @@ export async function listenWithFallback(server, preferredPort, logger, host = '
   throw lastError || new Error('No router ports available')
 }
 
+// 📖 v2: a set counts as usable when the active set holds at least one model.
+function hasUsableActiveSet(config) {
+  const router = config?.router
+  if (!router || typeof router !== 'object') return false
+  const activeSet = router.activeSet || DEFAULT_ROUTER_SETTINGS.activeSet
+  const set = router.sets?.[activeSet]
+  return Boolean(set && Array.isArray(set.models) && set.models.length > 0)
+}
+
 export async function runRouterDaemon() {
   const config = loadConfig()
-  const router = await ensureRouterConfigForDaemon(config)
+  // 📖 v2: listen FIRST. v1 awaited a 24-candidate probe sweep before the
+  // server socket opened, leaving first boots with a ~36s black hole. Build
+  // a fast static set when none exists, serve immediately, and upgrade to
+  // the probe-driven set in the background.
+  let needsProbedSetUpgrade = false
+  if (!hasUsableActiveSet(config)) {
+    const favSet = buildRouterSetFromFavorites(config)
+    if (favSet) {
+      config.router = normalizeRouterConfig({
+        ...DEFAULT_ROUTER_SETTINGS,
+        enabled: true,
+        onboardingSeen: true,
+        activeSet: favSet.name,
+        sets: { [favSet.name]: favSet },
+      })
+      saveConfig(config)
+    } else {
+      const syncSet = buildDefaultRouterSetSync(config, 5)
+      config.router = normalizeRouterConfig({
+        ...DEFAULT_ROUTER_SETTINGS,
+        enabled: true,
+        onboardingSeen: true,
+        activeSet: syncSet.name,
+        sets: { [syncSet.name]: syncSet },
+      })
+      saveConfig(config)
+      needsProbedSetUpgrade = true
+    }
+  }
+  const router = config.router
   // 📖 In dev mode, override the saved port with the dev default so a local
   // 📖 checkout doesn't clash with a production install on the same machine.
   // 📖 The saved config has port: 19280 (production); dev should use 29280.
@@ -4034,8 +4632,39 @@ export async function runRouterDaemon() {
   })
   runtime.configReloadTimer = setInterval(() => runtime.reloadConfigFromDisk(), CONFIG_RELOAD_INTERVAL_MS)
   runtime.tokenFlushTimer = setInterval(() => runtime.tokenTracker.flush(), TOKEN_FLUSH_INTERVAL_MS)
-  void runtime.runProbeBurst()
-  runtime.scheduleProbeLoop()
+  // 📖 v2: probe-driven default set upgrade (when the static one above was
+  // just created) happens in the background, after listen().
+  void (async () => {
+    try {
+      if (needsProbedSetUpgrade) {
+        // 📖 The static tier-ordered pick can contain models the user's key
+        // cannot actually call. Replace it once with the probe-driven set so
+        // the router starts on models that really answer.
+        const fresh = loadConfig()
+        const probed = await buildDefaultRouterSet(fresh, 5, {
+          probeFn: createDefaultProbeFn(fresh.apiKeys || {}),
+          probeTimeoutMs: 1500,
+          probeBudget: 24,
+        })
+        if (probed && Array.isArray(probed.models) && probed.models.length > 0) {
+          fresh.router = normalizeRouterConfig({
+            ...DEFAULT_ROUTER_SETTINGS,
+            enabled: true,
+            onboardingSeen: true,
+            activeSet: probed.name,
+            sets: { [probed.name]: probed },
+          })
+          saveConfig(fresh)
+          runtime.config = fresh
+          runtime.refreshRouteState()
+        }
+      }
+    } catch (error) {
+      logger.debug('Background router set upgrade skipped', { error: error?.message })
+    }
+    void runtime.runProbeBurst()
+    runtime.scheduleProbeLoop()
+  })()
   // 📖 Auto-heal: wait for the first probe burst to populate health data,
   // 📖 then swap any broken models (AUTH_ERROR / STALE) for working
   // 📖 alternatives. This is the M6 promise: the Playground and Router

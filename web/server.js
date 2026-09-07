@@ -52,8 +52,6 @@ import { getInstallTargetModes, installProviderEndpoints, getConfiguredInstallab
 import { isModelCompatibleWithTool } from '../src/core/tool-metadata.js'
 import { sendUsageTelemetry } from '../src/core/telemetry.js'
 import { getRouterDaemonStatus, startRouterDaemonBackground, stopRouterDaemon, getRouterTokensPath, getRouterPortPath } from '../src/core/router-daemon.js'
-import { getRouterV2DaemonStatus, startRouterV2DaemonBackground, stopRouterV2Daemon } from '../src/core/router-v2/daemon.js'
-import { getRouterV2PortPath } from '../src/core/router-v2/constants.js'
 import { scanAllToolConfigs, softDeleteModel } from '../src/core/installed-models-manager.js'
 import {
   TASK_TYPES,
@@ -621,7 +619,7 @@ function readTokenFile() {
 // /router-v2 and is marked BETA on every surface.
 function readDaemonV2Port() {
   try {
-    const raw = readFileSync(getRouterV2PortPath(), 'utf8').trim()
+    const raw = readFileSync(getRouterPortPath(), 'utf8').trim()
     if (/^\d+$/.test(raw)) return Number(raw)
   } catch {}
   return null
@@ -940,7 +938,7 @@ async function handleRequest(req, res) {
       const v2SubPath = url.pathname.replace(/^\/api\/router-v2/, '') || '/'
       if (v2SubPath === '/start' && req.method === 'POST') {
         try {
-          const result = await startRouterV2DaemonBackground()
+          const result = await startRouterDaemonBackground()
           sendJson(res, 200, result)
         } catch (err) {
           sendJson(res, 500, { ok: false, error: err.message })
@@ -950,7 +948,7 @@ async function handleRequest(req, res) {
       if (v2SubPath === '/stop' && req.method === 'POST') {
         if (req.method !== 'POST') { res.writeHead(405); res.end('Method Not Allowed'); return }
         try {
-          const result = await stopRouterV2Daemon()
+          const result = await stopRouterDaemon()
           sendJson(res, 200, result)
         } catch (err) {
           sendJson(res, 500, { ok: false, error: err.message })
@@ -959,7 +957,7 @@ async function handleRequest(req, res) {
       }
       if (v2SubPath === '/' || v2SubPath === '/status') {
         try {
-          const status = await getRouterV2DaemonStatus()
+          const status = await getRouterDaemonStatus()
           sendJson(res, 200, status)
         } catch (err) {
           sendJson(res, 200, { ok: false, running: false, router: 'v2', error: err.message })
@@ -987,7 +985,7 @@ async function handleRequest(req, res) {
         sendJson(res, proxy.status || 502, proxy.data || { ok: false, error: proxy.error || 'v2 daemon error' })
         return
       }
-      sendJson(res, 200, { ok: false, running: false, router: 'v2', error: 'Router v2 daemon not reachable (start it with: free-coding-models --router-v2-bg)' })
+      sendJson(res, 200, { ok: false, running: false, router: 'v2', error: 'Router daemon not reachable (start it with: free-coding-models --daemon-bg)' })
       return
     }
 

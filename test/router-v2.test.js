@@ -25,9 +25,23 @@ import { tmpdir } from 'node:os'
 
 import { sources } from '../sources.js'
 import { DEFAULT_ROUTER_SETTINGS, normalizeRouterConfig } from '../src/core/config.js'
-import {
-  createRouterV2RuntimeForTest,
-} from '../src/core/router-v2/daemon.js'
+// 📖 Since the merge, the v2 engine lives in the main RouterRuntime.
+import { RouterRuntime, ROUTER_TOKENS_PATH } from '../src/core/router-daemon.js'
+
+function createRouterV2RuntimeForTest({ config, port = 0, logger = null, tokenPath = null, breakersPath = null, historyPath = null } = {}) {
+  const crypto = Math.random().toString(16).slice(2)
+  return new RouterRuntime({
+    config: config || {},
+    port,
+    logger: logger || { level: 'error', error() {}, warn() {}, info() {}, debug() {} },
+    persistConfig: false,
+    tokenPath: tokenPath || `/tmp/fcm-v2-test-tokens-${crypto}.json`,
+    paths: {
+      breakers: breakersPath || `/tmp/fcm-v2-test-breakers-${crypto}.json`,
+      history: historyPath || `/tmp/fcm-v2-test-history-${crypto}.json`,
+    },
+  })
+}
 import { BreakerStore } from '../src/core/router-v2/breaker-store.js'
 import { RequestHistory } from '../src/core/router-v2/request-history.js'
 import { classifyFailure, clientStatusForKind, FAILURE_KINDS } from '../src/core/router-v2/failure-classifier.js'
