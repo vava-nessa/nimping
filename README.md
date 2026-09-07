@@ -151,15 +151,11 @@ free-coding-models --daemon-stop    # stop
 
 > 📖 **Full guide (probes, circuit breaker, failover, Playground, `--sync-set`, REST API):** [`docs/router.md`](./docs/router.md)
 
-### 🧪 Router v2 (beta)
+### 🧪 Router v2 engine (built in)
 
-A hardened second router that runs **next to** the stable one: content-validated failover (a 200 with empty or garbage output is a failure and fails over), quota-aware routing with `Retry-After` pauses, persisted circuit breakers with a DEGRADED warning state, per-request decision traces, an Anthropic `/v1/messages` endpoint, and "test via router" actions that exercise the real routing chain. Same sets, same keys, own port (`19380`), zero impact on v1.
+The router daemon now runs the hardened v2 engine internally: content-validated failover (a 200 with empty or garbage output is a failure and fails over), quota-aware routing with `Retry-After` pauses, persisted circuit breakers with a DEGRADED warning state, per-request decision traces, an Anthropic `/v1/messages` endpoint, and "test via router" actions that exercise the real routing chain. Same command, same port, same endpoints - existing setups upgrade by updating the package.
 
-```bash
-free-coding-models --router-v2-bg   # start (beta)
-```
-
-Open the TUI with `Shift+V` (or the "Router v2" entry in the Web Dashboard) to see the live fallback chain, per-request attempt chains and run pinned-model tests. Docs: [`docs/router-v2.md`](./docs/router-v2.md).
+Open the TUI with `Shift+V` (or the "Router v2" entry in the Web Dashboard) to see the live fallback chain, per-request attempt chains and run pinned-model tests (`Ctrl+T`). Docs: [`docs/router-v2.md`](./docs/router-v2.md).
 
 ---
 

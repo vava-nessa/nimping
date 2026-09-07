@@ -6,17 +6,18 @@ keys, and is flagged **BETA** everywhere (TUI overlay, web dashboard, CLI).
 Nothing you do with v2 touches how v1 behaves.
 
 ```bash
-free-coding-models --router-v2        # start in the foreground (port 19380)
-free-coding-models --router-v2-bg     # start in the background
-free-coding-models --router-v2-status # print status JSON
-free-coding-models --router-v2-stop   # stop it
+free-coding-models --daemon           # start in the foreground (port 19280)
+free-coding-models --daemon-bg        # start in the background
+free-coding-models --daemon-status    # print status JSON
+free-coding-models --daemon-stop      # stop it
 ```
 
-- Production port: `19380` (range `19380-19389`), dev mode: `29380`.
-- Override with `FCM_ROUTER_V2_PORT`.
-- Point your coding tool at `http://localhost:19380/v1`, model `fcm`,
-  key `fcm-local` (same shape as v1, just a different port).
-- v1 keeps running on `19280`; both daemons can run at the same time.
+> 📖 **Migration note:** Router v2 started as a parallel beta daemon on port
+> 19380 and has since been MERGED into the main router daemon. The v2 engine
+> (everything documented below) now powers the historical `--daemon` port,
+> and the `--router-v2*` flags remain as aliases of the main lifecycle so
+> existing scripts keep working. Nothing to reconfigure: point your tool at
+> `http://localhost:19280/v1` as before.
 
 ## What v2 fixes over v1
 
